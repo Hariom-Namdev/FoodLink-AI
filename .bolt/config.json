@@ -1,5 +1,0 @@
-{
-  "projectType": "react",
-  "framework": "vite",
-  "entry": "src/main.tsx"
-}
