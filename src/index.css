@@ -134,3 +134,8 @@ main {
 /* hide scrollbar for marquee */
 .no-bar::-webkit-scrollbar { display: none; }
 .no-bar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Dark filter for free OSM tiles */
+.foodlink-dark-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(0.7) contrast(1.1) saturate(0.6);
+}

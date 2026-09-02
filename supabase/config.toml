@@ -1,0 +1,10 @@
+project_id = "lenqsnsorpdtpyraznej"
+
+[functions.ai-chatbot]
+verify_jwt = false
+
+[functions.smart-donation-agent]
+verify_jwt = false
+
+[functions.ngo-respond]
+verify_jwt = false

@@ -1,5 +1,6 @@
-// AI Chatbot Edge Function - Gemini 2.5 Flash
+// AI Chatbot Edge Function - Gemini 3.5 Flash
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,7 +14,22 @@ Background context (for reference only, when relevant): You are integrated into 
 
 Do not mention Google, Gemini, or any AI provider. Do not include ads.`;
 
-const FALLBACK_API_KEY = Deno.env.get("GEMINI_API_KEY") || "";
+const GEMINI_MODEL = "gemini-3.5-flash";
+
+async function getApiKey(): Promise<string> {
+  const envKey = Deno.env.get("GEMINI_API_KEY");
+  if (envKey && envKey.trim().length > 0) return envKey.trim();
+
+  // Fallback: read from Supabase vault via SECURITY DEFINER RPC
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data, error } = await supabase.rpc("get_secret", { p_name: "GEMINI_API_KEY" });
+  if (error || !data) return "";
+  return (data as string).trim();
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -30,8 +46,10 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const envKey = Deno.env.get("GEMINI_API_KEY");
-    const apiKey = envKey && envKey.trim().length > 0 ? envKey.trim() : FALLBACK_API_KEY;
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not configured. Set it as an edge function secret or in the vault.");
+    }
 
     const reply = await callGemini(apiKey, messages);
 
@@ -56,10 +74,10 @@ async function callGemini(apiKey: string, messages: { role: string; content: str
     parts: [{ text: m.content }],
   }));
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
 
   let response: Response;
   try {

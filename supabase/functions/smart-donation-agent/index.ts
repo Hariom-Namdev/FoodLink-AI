@@ -23,11 +23,19 @@ const corsHeaders = {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") || "";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+async function getApiKey(): Promise<string> {
+  const envKey = Deno.env.get("GEMINI_API_KEY");
+  if (envKey && envKey.trim().length > 0) return envKey.trim();
+
+  const { data, error } = await supabase.rpc("get_secret", { p_name: "GEMINI_API_KEY" });
+  if (error || !data) return "";
+  return (data as string).trim();
+}
 
 // NGO response timeout: how long to wait before trying the next NGO.
 const NGO_TIMEOUT_MS = 45_000; // 45 seconds per NGO
@@ -70,9 +78,11 @@ Donation:
 Rules: Reject if expiry_hours < 1 or freshness_score < 40 or quantity <= 0. Otherwise accept.`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const apiKey = await getApiKey();
+    if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
