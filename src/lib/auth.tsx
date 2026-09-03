@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { supabase, type Profile, type Role } from './supabase';
 
@@ -16,77 +16,125 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const loadProfile = useCallback(async (uid: string) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .maybeSingle();
-    if (!error && data) {
-      setUser(data as Profile);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .maybeSingle();
+      if (error) {
+        console.warn('Failed to load profile:', error.message);
+        return;
+      }
+      if (data && isMounted.current) {
+        setUser(data as Profile);
+      }
+    } catch (err) {
+      console.warn('Profile load error:', err);
     }
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      await loadProfile(session.user.id);
-    } else {
-      setUser(null);
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) {
+        if (isMounted.current) setUser(null);
+        return;
+      }
+      if (session?.user) {
+        await loadProfile(session.user.id);
+      } else {
+        if (isMounted.current) setUser(null);
+      }
+    } catch (err) {
+      console.warn('Session refresh error:', err);
+      if (isMounted.current) setUser(null);
     }
   }, [loadProfile]);
 
   useEffect(() => {
     let mounted = true;
+
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user && mounted) {
-        await loadProfile(session.user.id);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) {
+          console.warn('Initial session error:', error.message);
+        } else if (session?.user && mounted) {
+          await loadProfile(session.user.id);
+        }
+      } catch (err) {
+        console.warn('Init session error:', err);
+      } finally {
+        if (mounted) setLoading(false);
       }
-      if (mounted) setLoading(false);
     };
     init();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if (event === 'SIGNED_OUT' || !session) {
+        setUser(null);
+        return;
+      }
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         if (session?.user) {
-          await loadProfile(session.user.id);
-        } else {
-          setUser(null);
+          loadProfile(session.user.id);
         }
-      })();
+      }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [loadProfile]);
 
   const signUp: AuthState['signUp'] = async (email, password, meta) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: meta },
-    });
-    if (error) return { error: error.message };
-    // If signup returns a session immediately (email confirmation off), load profile
-    if (data.session?.user) {
-      await loadProfile(data.session.user.id);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: meta },
+      });
+      if (error) return { error: error.message };
+      if (data.session?.user) {
+        await loadProfile(data.session.user.id);
+      }
+      return { error: null };
+    } catch (err: any) {
+      return { error: err.message || 'Sign up failed. Please try again.' };
     }
-    return { error: null };
   };
 
   const signIn: AuthState['signIn'] = async (email, password) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
-    if (data.user) {
-      await loadProfile(data.user.id);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return { error: error.message };
+      if (data.user) {
+        await loadProfile(data.user.id);
+      }
+      return { error: null };
+    } catch (err: any) {
+      return { error: err.message || 'Sign in failed. Please try again.' };
     }
-    return { error: null };
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Sign out error:', err);
+    }
+    if (isMounted.current) setUser(null);
   };
 
   return (

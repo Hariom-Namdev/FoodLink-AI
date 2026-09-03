@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from 'react';
-import { motion } from 'framer-motion';
 import { Bot, Send, ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Reveal, SectionHeading } from '../components/ui';

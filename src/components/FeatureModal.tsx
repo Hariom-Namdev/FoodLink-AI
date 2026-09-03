@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Loader2, Sparkles } from 'lucide-react';
-import { restaurants, ngos, cities, foodCategories, monthlyTrend } from '../data/content';
+import { ngos, cities, foodCategories } from '../data/content';
 
 interface FeatureModalProps {
   open: boolean;
