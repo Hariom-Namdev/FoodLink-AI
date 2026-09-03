@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -14,7 +14,7 @@ import {
 import { useAuth } from '../lib/auth';
 import { supabase, type Donation } from '../lib/supabase';
 import { Counter, Reveal, SectionHeading, TiltCard } from '../components/ui';
-import { latestDonations, monthlyTrend, cityWiseData, foodCategoryData } from '../data/content';
+import { latestDonations, monthlyTrend } from '../data/content';
 import DonateFoodModal from '../components/DonateFoodModal';
 import { AgentActivityFeed } from '../components/Dashboard';
 
@@ -526,11 +526,56 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
     removed: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
   };
 
-  const fraudFlags = [
-    { restaurant: 'Local Eatery #4821', issue: 'Duplicate listing detected', severity: 'High' },
-    { restaurant: 'Test Kitchen', issue: 'Unverified pickup location', severity: 'Medium' },
-    { restaurant: 'Quick Bites', issue: 'Quantity mismatch (3x)', severity: 'Low' },
-  ];
+  // Compute fraud flags from real donations: removed donations + low freshness
+  const fraudFlags = allDonations
+    .filter((d) => d.status === 'removed' || d.freshness_score < 70)
+    .slice(0, 5)
+    .map((d) => ({
+      restaurant: d.restaurant_name,
+      issue: d.status === 'removed' ? 'Removed by admin' : `Low freshness score (${d.freshness_score}%)`,
+      severity: d.status === 'removed' ? 'High' : d.freshness_score < 60 ? 'High' : 'Medium',
+    }));
+
+  // Compute chart data from real donations
+  const cityWise = useMemo(() => {
+    const cityMap: Record<string, number> = {};
+ allDonations.forEach((d) => {
+      if (d.status === 'removed') return;
+      cityMap[d.city] = (cityMap[d.city] || 0) + d.meals;
+    });
+    return Object.entries(cityMap)
+      .map(([city, meals]) => ({ city, meals }))
+      .sort((a, b) => b.meals - a.meals)
+      .slice(0, 8);
+  }, [allDonations]);
+
+  const foodMix = useMemo(() => {
+    const catMap: Record<string, number> = {};
+    allDonations.forEach((d) => {
+      if (d.status === 'removed') return;
+      catMap[d.category] = (catMap[d.category] || 0) + 1;
+    });
+    const entries = Object.entries(catMap)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    if (entries.length === 0) return [{ name: 'No data', value: 1 }];
+    return entries;
+  }, [allDonations]);
+
+  const trendData = useMemo(() => {
+    const monthMap: Record<string, number> = {};
+    allDonations.forEach((d) => {
+      if (d.status === 'removed') return;
+      const date = new Date(d.created_at);
+      const key = date.toLocaleDateString('en-US', { month: 'short' });
+      monthMap[key] = (monthMap[key] || 0) + d.meals;
+    });
+    const entries = Object.entries(monthMap)
+      .map(([month, meals]) => ({ month, meals, co2: Math.round(meals * 0.22) }))
+      .slice(-12);
+    if (entries.length === 0) return [{ month: '—', meals: 0, co2: 0 }];
+    return entries;
+  }, [allDonations]);
   return (
     <div className="space-y-6">
       <h3 className="font-display text-lg font-bold text-white">Admin Overview</h3>
@@ -538,7 +583,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
         <StatCard icon={Store} label="Total Restaurants" value={stats?.restaurants ?? 0} suffix="" color="from-emerald-500 to-green-600" onClick={() => { setDetailModal('restaurants'); setDetailSearch(''); setDetailCityFilter('all'); }} />
         <StatCard icon={HeartHandshake} label="Active NGOs" value={stats?.ngos ?? 0} suffix="" color="from-lime-500 to-emerald-600" onClick={() => { setDetailModal('ngos'); setDetailSearch(''); setDetailCityFilter('all'); }} />
         <StatCard icon={Bike} label="Volunteers" value={stats?.volunteers ?? 0} suffix="" color="from-green-500 to-teal-600" onClick={() => { setDetailModal('volunteers'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={AlertTriangle} label="Fraud Flags" value={profileRows.length || 0} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={AlertTriangle} label="Fraud Flags" value={fraudFlags.length} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
       </div>
 
       {/* Donation Management Table */}
@@ -674,10 +719,16 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
                 <button
                   onClick={async () => {
                     setRemoving(true);
-                    onRemove(confirmRemove, removeReason || 'Removed by admin');
-                    setRemoving(false);
-                    setConfirmRemove(null);
-                    setRemoveReason('');
+                    setRemoveError(null);
+                    try {
+                      await onRemove(confirmRemove, removeReason || 'Removed by admin');
+                      setConfirmRemove(null);
+                      setRemoveReason('');
+                    } catch (err: any) {
+                      setRemoveError(err?.message || 'Failed to remove donation');
+                    } finally {
+                      setRemoving(false);
+                    }
                   }}
                   disabled={removing}
                   className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-rose-500/20 px-4 py-2.5 text-sm font-semibold text-rose-300 ring-1 ring-rose-500/40 transition-all hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-60"
@@ -685,6 +736,9 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
                   {removing ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertCircle className="h-4 w-4" />}
                   {removing ? 'Removing...' : 'Remove Donation'}
                 </button>
+                {removeError && (
+                  <p className="mt-3 text-xs text-rose-400">{removeError}</p>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -700,7 +754,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
             <h3 className="font-display text-base font-bold text-white">Platform-wide Donation Trend</h3>
             <div className="mt-6 h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthlyTrend}>
+                <LineChart data={trendData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                   <XAxis dataKey="month" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                   <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
@@ -739,7 +793,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
             <h3 className="font-display text-base font-bold text-white">City-wise Distribution</h3>
             <div className="mt-6 h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={cityWiseData}>
+                <BarChart data={cityWise}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis dataKey="city" stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
                   <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${v / 1000}k`} />
@@ -757,8 +811,8 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
             <div className="mt-4 h-48">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={foodCategoryData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={70} paddingAngle={3}>
-                    {foodCategoryData.map((_, i) => (
+                  <Pie data={foodMix} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={70} paddingAngle={3}>
+                    {foodMix.map((_, i) => (
                       <Cell key={i} fill={pieColors[i % pieColors.length]} stroke="none" />
                     ))}
                   </Pie>
