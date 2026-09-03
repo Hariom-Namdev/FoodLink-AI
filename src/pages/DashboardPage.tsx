@@ -409,6 +409,33 @@ function EmptyState({ icon: Icon, text }: { icon: any; text: string }) {
   );
 }
 
+interface AdminStats {
+  restaurants: number;
+  ngos: number;
+  volunteers: number;
+  total_donations: number;
+  available: number;
+  claimed: number;
+  picked: number;
+  delivered: number;
+  removed: number;
+  total_meals: number;
+  total_claims: number;
+  active_claims: number;
+  completed_claims: number;
+}
+
+interface ProfileRow {
+  id: string;
+  full_name: string;
+  role: string;
+  organization: string;
+  city: string;
+  phone: string;
+  created_at: string;
+  donation_count?: number;
+}
+
 function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemove: (d: Donation, reason: string) => void }) {
   const [selected, setSelected] = useState<Donation | null>(null);
   const [filter, setFilter] = useState<'all' | 'available' | 'claimed' | 'picked' | 'delivered' | 'removed'>('all');
@@ -418,19 +445,77 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
   const [detailModal, setDetailModal] = useState<'restaurants' | 'ngos' | 'volunteers' | 'fraud' | null>(null);
   const [detailSearch, setDetailSearch] = useState('');
   const [detailCityFilter, setDetailCityFilter] = useState('all');
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [profileRows, setProfileRows] = useState<ProfileRow[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
-  const dummyDonations: Donation[] = [
-    { id: 'd1', restaurant_id: 'r1', restaurant_name: 'Paradise Biryani', food_item: 'Hyderabadi Rice', category: 'Rice', quantity: 50, meals: 120, city: 'Hyderabad', lat: null, lng: null, prep_time: '12:30 PM', expiry_hours: 6, freshness_score: 92, status: 'available', image_url: '', created_at: new Date(Date.now() - 2 * 60000).toISOString() },
-    { id: 'd2', restaurant_id: 'r2', restaurant_name: 'Haldiram', food_item: 'Snacks Platter', category: 'Snacks', quantity: 30, meals: 85, city: 'Noida', lat: null, lng: null, prep_time: '1:00 PM', expiry_hours: 4, freshness_score: 88, status: 'claimed', image_url: '', created_at: new Date(Date.now() - 8 * 60000).toISOString() },
-    { id: 'd3', restaurant_id: 'r3', restaurant_name: 'Barbeque Nation', food_item: 'Mixed Vegetables', category: 'Vegetables', quantity: 80, meals: 200, city: 'Bengaluru', lat: null, lng: null, prep_time: '11:45 AM', expiry_hours: 5, freshness_score: 90, status: 'available', image_url: '', created_at: new Date(Date.now() - 15 * 60000).toISOString() },
-    { id: 'd4', restaurant_id: 'r4', restaurant_name: "Theobroma", food_item: 'Bread & Pastries', category: 'Bakery', quantity: 25, meals: 60, city: 'Indore', lat: null, lng: null, prep_time: '10:00 AM', expiry_hours: 8, freshness_score: 85, status: 'picked', image_url: '', created_at: new Date(Date.now() - 22 * 60000).toISOString() },
-    { id: 'd5', restaurant_id: 'r5', restaurant_name: "Domino's", food_item: 'Packed Pizzas', category: 'Packed Food', quantity: 40, meals: 140, city: 'Mumbai', lat: null, lng: null, prep_time: '1:30 PM', expiry_hours: 3, freshness_score: 78, status: 'delivered', image_url: '', created_at: new Date(Date.now() - 30 * 60000).toISOString() },
-    { id: 'd6', restaurant_id: 'r6', restaurant_name: 'Bikanervala', food_item: 'Sweets Box', category: 'Sweets', quantity: 35, meals: 95, city: 'Gurugram', lat: null, lng: null, prep_time: '11:00 AM', expiry_hours: 7, freshness_score: 91, status: 'available', image_url: '', created_at: new Date(Date.now() - 41 * 60000).toISOString() },
-    { id: 'd7', restaurant_id: 'r7', restaurant_name: "McDonald's", food_item: 'Burger Meals', category: 'Snacks', quantity: 45, meals: 110, city: 'Kolkata', lat: null, lng: null, prep_time: '12:15 PM', expiry_hours: 2, freshness_score: 72, status: 'claimed', image_url: '', created_at: new Date(Date.now() - 52 * 60000).toISOString() },
-    { id: 'd8', restaurant_id: 'r8', restaurant_name: 'Behrouz Biryani', food_item: 'Royal Biryani', category: 'Rice', quantity: 60, meals: 160, city: 'Bhopal', lat: null, lng: null, prep_time: '12:45 PM', expiry_hours: 5, freshness_score: 87, status: 'delivered', image_url: '', created_at: new Date(Date.now() - 60 * 60000).toISOString() },
-  ];
+  useEffect(() => {
+    let mounted = true;
+    const loadStats = async () => {
+      const { data, error } = await supabase.rpc('admin_get_dashboard_stats');
+      if (mounted && !error && data) setStats(data as AdminStats);
+    };
+    loadStats();
+    return () => { mounted = false; };
+  }, [donations]);
 
-  const allDonations = donations.length > 0 ? donations : dummyDonations;
+  useEffect(() => {
+    if (!detailModal) { setProfileRows([]); return; }
+    setDetailLoading(true);
+    let mounted = true;
+
+    const loadDetail = async () => {
+      if (detailModal === 'fraud') {
+        const { data } = await supabase
+          .from('donations')
+          .select('id, restaurant_name, food_item, city, status, created_at, freshness_score')
+          .or('status.eq.removed, freshness_score.lt.70')
+          .order('created_at', { ascending: false })
+          .limit(20);
+        if (mounted && data) {
+          setProfileRows(data.map((d: any) => ({
+            id: d.id,
+            full_name: d.restaurant_name,
+            role: 'donation',
+            organization: d.food_item,
+            city: d.city || '',
+            phone: '',
+            created_at: d.created_at,
+            donation_count: d.freshness_score,
+          })));
+        }
+      } else {
+        const roleFilter = detailModal === 'restaurants' ? 'restaurant' : detailModal === 'ngos' ? 'ngo' : 'volunteer';
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id, full_name, role, organization, city, phone, created_at')
+          .eq('role', roleFilter)
+          .order('created_at', { ascending: false });
+        if (mounted && !error && data) {
+          if (detailModal === 'restaurants') {
+            const withCounts = await Promise.all((data as ProfileRow[]).map(async (p) => {
+              const { count } = await supabase
+                .from('donations')
+                .select('id', { count: 'exact', head: true })
+                .eq('restaurant_id', p.id);
+              return { ...p, donation_count: count || 0 };
+            }));
+            if (mounted) setProfileRows(withCounts);
+          } else {
+            setProfileRows(data as ProfileRow[]);
+          }
+        } else if (mounted) {
+          setProfileRows([]);
+        }
+      }
+      if (mounted) setDetailLoading(false);
+    };
+    loadDetail();
+    return () => { mounted = false; };
+  }, [detailModal]);
+
+  const allDonations = donations;
   const filtered = filter === 'all' ? allDonations : allDonations.filter((d) => d.status === filter);
 
   const statusColors: Record<string, string> = {
@@ -450,10 +535,10 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
     <div className="space-y-6">
       <h3 className="font-display text-lg font-bold text-white">Admin Overview</h3>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={Store} label="Total Restaurants" value={5600} suffix="+" trend="11%" color="from-emerald-500 to-green-600" onClick={() => { setDetailModal('restaurants'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={HeartHandshake} label="Active NGOs" value={1240} suffix="+" trend="9%" color="from-lime-500 to-emerald-600" onClick={() => { setDetailModal('ngos'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={Bike} label="Volunteers" value={8900} suffix="+" trend="17%" color="from-green-500 to-teal-600" onClick={() => { setDetailModal('volunteers'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={AlertTriangle} label="Fraud Flags" value={3} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={Store} label="Total Restaurants" value={stats?.restaurants ?? 0} suffix="" color="from-emerald-500 to-green-600" onClick={() => { setDetailModal('restaurants'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={HeartHandshake} label="Active NGOs" value={stats?.ngos ?? 0} suffix="" color="from-lime-500 to-emerald-600" onClick={() => { setDetailModal('ngos'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={Bike} label="Volunteers" value={stats?.volunteers ?? 0} suffix="" color="from-green-500 to-teal-600" onClick={() => { setDetailModal('volunteers'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={AlertTriangle} label="Fraud Flags" value={profileRows.length || 0} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
       </div>
 
       {/* Donation Management Table */}
@@ -834,247 +919,180 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
 
               {/* Modal body — scrollable */}
               <div className="max-h-[55vh] overflow-y-auto px-6 py-4">
-                {/* ===== Restaurants ===== */}
-                {detailModal === 'restaurants' && (() => {
-                  const rows = [
-                    { name: 'The Taj Restaurant', city: 'Mumbai', status: 'Active', donations: 47, lastActive: '2h ago' },
-                    { name: 'Spice Garden', city: 'Delhi', status: 'Active', donations: 32, lastActive: '5h ago' },
-                    { name: 'Biryani House', city: 'Bengaluru', status: 'Suspended', donations: 18, lastActive: '3d ago' },
-                    { name: 'Green Leaf Cafe', city: 'Pune', status: 'Active', donations: 56, lastActive: '1h ago' },
-                    { name: 'Coastal Kitchen', city: 'Chennai', status: 'Active', donations: 29, lastActive: '4h ago' },
-                    { name: 'Royal Dine', city: 'Hyderabad', status: 'Pending Verification', donations: 0, lastActive: 'Never' },
-                    { name: 'Sunset Bistro', city: 'Jaipur', status: 'Active', donations: 41, lastActive: '6h ago' },
-                    { name: 'Curry Leaves', city: 'Kolkata', status: 'Active', donations: 23, lastActive: '12h ago' },
-                    { name: 'Pizza Palace', city: 'Mumbai', status: 'Suspended', donations: 12, lastActive: '1w ago' },
-                    { name: 'Dosa Junction', city: 'Delhi', status: 'Active', donations: 38, lastActive: '30m ago' },
-                  ];
-                  const filtered = rows.filter((r) =>
-                    (detailCityFilter === 'all' || r.city === detailCityFilter) &&
-                    (!detailSearch || r.name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()))
-                  );
-                  if (filtered.length === 0) return <EmptyState icon={Store} text="No restaurants match your filters" />;
-                  return (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead className="text-xs uppercase text-slate-500">
-                          <tr>
-                            <th className="pb-3 pr-4 font-semibold">Name</th>
-                            <th className="pb-3 pr-4 font-semibold">City</th>
-                            <th className="pb-3 pr-4 font-semibold">Status</th>
-                            <th className="pb-3 pr-4 font-semibold">Total Donations</th>
-                            <th className="pb-3 font-semibold">Last Active</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered.map((r, i) => (
-                            <motion.tr
-                              key={i}
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: i * 0.04 }}
-                              className="border-t border-white/5 hover:bg-white/5"
-                            >
-                              <td className="py-3 pr-4 font-medium text-white">{r.name}</td>
-                              <td className="py-3 pr-4 text-slate-300">{r.city}</td>
-                              <td className="py-3 pr-4">
-                                <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
-                                  r.status === 'Active' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' :
-                                  r.status === 'Suspended' ? 'bg-rose-500/15 text-rose-300 ring-rose-500/30' :
-                                  'bg-amber-500/15 text-amber-300 ring-amber-500/30'
-                                }`}>{r.status}</span>
-                              </td>
-                              <td className="py-3 pr-4 font-display font-bold text-primary">{r.donations}</td>
-                              <td className="py-3 text-slate-400">{r.lastActive}</td>
-                            </motion.tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
+                {detailLoading ? (
+                  <div className="flex items-center justify-center py-16">
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                  </div>
+                ) : (
+                  <>
+                    {/* ===== Restaurants ===== */}
+                    {detailModal === 'restaurants' && (() => {
+                      const filtered = profileRows.filter((r) =>
+                        (detailCityFilter === 'all' || r.city === detailCityFilter) &&
+                        (!detailSearch || r.full_name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.organization.toLowerCase().includes(detailSearch.toLowerCase()))
+                      );
+                      if (filtered.length === 0) return <EmptyState icon={Store} text="No restaurants match your filters" />;
+                      return (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-sm">
+                            <thead className="text-xs uppercase text-slate-500">
+                              <tr>
+                                <th className="pb-3 pr-4 font-semibold">Name</th>
+                                <th className="pb-3 pr-4 font-semibold">Organization</th>
+                                <th className="pb-3 pr-4 font-semibold">City</th>
+                                <th className="pb-3 pr-4 font-semibold">Total Donations</th>
+                                <th className="pb-3 font-semibold">Joined</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filtered.map((r, i) => (
+                                <motion.tr
+                                  key={r.id}
+                                  initial={{ opacity: 0, x: -10 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: i * 0.04 }}
+                                  className="border-t border-white/5 hover:bg-white/5"
+                                >
+                                  <td className="py-3 pr-4 font-medium text-white">{r.full_name}</td>
+                                  <td className="py-3 pr-4 text-slate-300">{r.organization || '—'}</td>
+                                  <td className="py-3 pr-4 text-slate-400">{r.city || '—'}</td>
+                                  <td className="py-3 pr-4 font-display font-bold text-primary">{r.donation_count ?? 0}</td>
+                                  <td className="py-3 text-slate-400">{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                </motion.tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
 
-                {/* ===== NGOs ===== */}
-                {detailModal === 'ngos' && (() => {
-                  const rows = [
-                    { name: 'Akshaya Patra Foundation', city: 'Bengaluru', contact: '+91-80-7197-7900', active: 12, completed: 340, status: 'Verified' },
-                    { name: 'Feeding India', city: 'Delhi', contact: '+91-11-4655-4321', active: 8, completed: 215, status: 'Verified' },
-                    { name: 'Robin Hood Army', city: 'Mumbai', contact: '+91-22-4000-1234', active: 5, completed: 180, status: 'Verified' },
-                    { name: 'Goonj', city: 'Delhi', contact: '+91-11-2697-9232', active: 0, completed: 95, status: 'Inactive' },
-                    { name: 'Smile Foundation', city: 'Hyderabad', contact: '+91-40-2345-6789', active: 3, completed: 67, status: 'Verified' },
-                    { name: 'ISKCON Food Relief', city: 'Mumbai', contact: '+91-22-2870-0000', active: 7, completed: 280, status: 'Verified' },
-                    { name: 'No Food Waste', city: 'Coimbatore', contact: '+91-422-456-7890', active: 2, completed: 45, status: 'Pending' },
-                    { name: 'Roti Bank Mumbai', city: 'Mumbai', contact: '+91-22-2820-2020', active: 4, completed: 130, status: 'Verified' },
-                    { name: 'Khalsa Aid India', city: 'Amritsar', contact: '+91-183-501-2345', active: 1, completed: 38, status: 'Verified' },
-                    { name: 'Seva Kitchen', city: 'Pune', contact: '+91-20-6640-1234', active: 0, completed: 52, status: 'Inactive' },
-                  ];
-                  const filtered = rows.filter((r) =>
-                    (detailCityFilter === 'all' || r.city === detailCityFilter) &&
-                    (!detailSearch || r.name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.contact.includes(detailSearch))
-                  );
-                  if (filtered.length === 0) return <EmptyState icon={HeartHandshake} text="No NGOs match your filters" />;
-                  return (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead className="text-xs uppercase text-slate-500">
-                          <tr>
-                            <th className="pb-3 pr-4 font-semibold">Name</th>
-                            <th className="pb-3 pr-4 font-semibold">City</th>
-                            <th className="pb-3 pr-4 font-semibold">Contact</th>
-                            <th className="pb-3 pr-4 font-semibold">Active</th>
-                            <th className="pb-3 pr-4 font-semibold">Completed</th>
-                            <th className="pb-3 font-semibold">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered.map((r, i) => (
-                            <motion.tr
-                              key={i}
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: i * 0.04 }}
-                              className="border-t border-white/5 hover:bg-white/5"
-                            >
-                              <td className="py-3 pr-4 font-medium text-white">{r.name}</td>
-                              <td className="py-3 pr-4 text-slate-300">{r.city}</td>
-                              <td className="py-3 pr-4 text-slate-400">{r.contact}</td>
-                              <td className="py-3 pr-4 font-display font-bold text-amber-400">{r.active}</td>
-                              <td className="py-3 pr-4 font-display font-bold text-emerald-400">{r.completed}</td>
-                              <td className="py-3">
-                                <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
-                                  r.status === 'Verified' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' :
-                                  r.status === 'Inactive' ? 'bg-slate-500/15 text-slate-300 ring-slate-500/30' :
-                                  'bg-amber-500/15 text-amber-300 ring-amber-500/30'
-                                }`}>{r.status}</span>
-                              </td>
-                            </motion.tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
+                    {/* ===== NGOs ===== */}
+                    {detailModal === 'ngos' && (() => {
+                      const filtered = profileRows.filter((r) =>
+                        (detailCityFilter === 'all' || r.city === detailCityFilter) &&
+                        (!detailSearch || r.full_name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.organization.toLowerCase().includes(detailSearch.toLowerCase()) || (r.phone && r.phone.includes(detailSearch)))
+                      );
+                      if (filtered.length === 0) return <EmptyState icon={HeartHandshake} text="No NGOs match your filters" />;
+                      return (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-sm">
+                            <thead className="text-xs uppercase text-slate-500">
+                              <tr>
+                                <th className="pb-3 pr-4 font-semibold">Name</th>
+                                <th className="pb-3 pr-4 font-semibold">Organization</th>
+                                <th className="pb-3 pr-4 font-semibold">City</th>
+                                <th className="pb-3 pr-4 font-semibold">Contact</th>
+                                <th className="pb-3 font-semibold">Joined</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filtered.map((r, i) => (
+                                <motion.tr
+                                  key={r.id}
+                                  initial={{ opacity: 0, x: -10 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: i * 0.04 }}
+                                  className="border-t border-white/5 hover:bg-white/5"
+                                >
+                                  <td className="py-3 pr-4 font-medium text-white">{r.full_name}</td>
+                                  <td className="py-3 pr-4 text-slate-300">{r.organization || '—'}</td>
+                                  <td className="py-3 pr-4 text-slate-400">{r.city || '—'}</td>
+                                  <td className="py-3 pr-4 text-slate-400">{r.phone || '—'}</td>
+                                  <td className="py-3 text-slate-400">{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                </motion.tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
 
-                {/* ===== Volunteers ===== */}
-                {detailModal === 'volunteers' && (() => {
-                  const rows = [
-                    { name: 'Rahul Sharma', city: 'Mumbai', ngo: 'Robin Hood Army', tasks: 47, available: true },
-                    { name: 'Priya Patel', city: 'Delhi', ngo: 'Feeding India', tasks: 32, available: true },
-                    { name: 'Arjun Kumar', city: 'Bengaluru', ngo: 'Akshaya Patra', tasks: 28, available: false },
-                    { name: 'Sneha Reddy', city: 'Hyderabad', ngo: 'Smile Foundation', tasks: 19, available: true },
-                    { name: 'Vikram Singh', city: 'Pune', ngo: 'Seva Kitchen', tasks: 41, available: false },
-                    { name: 'Ananya Das', city: 'Kolkata', ngo: 'Khalsa Aid India', tasks: 15, available: true },
-                    { name: 'Karthik Iyer', city: 'Chennai', ngo: 'No Food Waste', tasks: 23, available: true },
-                    { name: 'Meera Joshi', city: 'Surat', ngo: 'Jeevan Anand', tasks: 8, available: false },
-                    { name: 'Rohan Gupta', city: 'Mumbai', ngo: 'Roti Bank Mumbai', tasks: 36, available: true },
-                    { name: 'Divya Nair', city: 'Delhi', ngo: 'Delhi Food Bank', tasks: 52, available: true },
-                  ];
-                  const filtered = rows.filter((r) =>
-                    (detailCityFilter === 'all' || r.city === detailCityFilter) &&
-                    (!detailSearch || r.name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.ngo.toLowerCase().includes(detailSearch.toLowerCase()))
-                  );
-                  if (filtered.length === 0) return <EmptyState icon={Bike} text="No volunteers match your filters" />;
-                  return (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead className="text-xs uppercase text-slate-500">
-                          <tr>
-                            <th className="pb-3 pr-4 font-semibold">Name</th>
-                            <th className="pb-3 pr-4 font-semibold">City</th>
-                            <th className="pb-3 pr-4 font-semibold">Assigned NGO</th>
-                            <th className="pb-3 pr-4 font-semibold">Tasks Completed</th>
-                            <th className="pb-3 font-semibold">Availability</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered.map((r, i) => (
-                            <motion.tr
-                              key={i}
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: i * 0.04 }}
-                              className="border-t border-white/5 hover:bg-white/5"
-                            >
-                              <td className="py-3 pr-4 font-medium text-white">{r.name}</td>
-                              <td className="py-3 pr-4 text-slate-300">{r.city}</td>
-                              <td className="py-3 pr-4 text-slate-400">{r.ngo}</td>
-                              <td className="py-3 pr-4 font-display font-bold text-primary">{r.tasks}</td>
-                              <td className="py-3">
-                                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
-                                  r.available ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' : 'bg-slate-500/15 text-slate-300 ring-slate-500/30'
-                                }`}>
-                                  <span className={`h-1.5 w-1.5 rounded-full ${r.available ? 'bg-emerald-400' : 'bg-slate-500'}`} />
-                                  {r.available ? 'Available' : 'Busy'}
-                                </span>
-                              </td>
-                            </motion.tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
+                    {/* ===== Volunteers ===== */}
+                    {detailModal === 'volunteers' && (() => {
+                      const filtered = profileRows.filter((r) =>
+                        (detailCityFilter === 'all' || r.city === detailCityFilter) &&
+                        (!detailSearch || r.full_name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.organization.toLowerCase().includes(detailSearch.toLowerCase()))
+                      );
+                      if (filtered.length === 0) return <EmptyState icon={Bike} text="No volunteers match your filters" />;
+                      return (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-sm">
+                            <thead className="text-xs uppercase text-slate-500">
+                              <tr>
+                                <th className="pb-3 pr-4 font-semibold">Name</th>
+                                <th className="pb-3 pr-4 font-semibold">City</th>
+                                <th className="pb-3 pr-4 font-semibold">Organization</th>
+                                <th className="pb-3 font-semibold">Joined</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filtered.map((r, i) => (
+                                <motion.tr
+                                  key={r.id}
+                                  initial={{ opacity: 0, x: -10 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: i * 0.04 }}
+                                  className="border-t border-white/5 hover:bg-white/5"
+                                >
+                                  <td className="py-3 pr-4 font-medium text-white">{r.full_name}</td>
+                                  <td className="py-3 pr-4 text-slate-300">{r.city || '—'}</td>
+                                  <td className="py-3 pr-4 text-slate-400">{r.organization || '—'}</td>
+                                  <td className="py-3 text-slate-400">{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                </motion.tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
 
-                {/* ===== Fraud Flags ===== */}
-                {detailModal === 'fraud' && (() => {
-                  const rows = [
-                    { restaurant: 'Biryani House', city: 'Bengaluru', reason: 'Duplicate listings with altered quantities', risk: 'High', date: '2026-07-28', action: 'Pending' },
-                    { restaurant: 'Pizza Palace', city: 'Mumbai', reason: 'Inconsistent pickup records — no NGO confirmation', risk: 'Medium', date: '2026-07-25', action: 'Under Review' },
-                    { restaurant: 'Royal Dine', city: 'Hyderabad', reason: 'Account created but never verified — suspicious activity', risk: 'Low', date: '2026-07-20', action: 'Pending' },
-                    { restaurant: 'Spice Garden', city: 'Delhi', reason: 'Freshness score manipulation detected by AI validator', risk: 'High', date: '2026-07-30', action: 'Under Review' },
-                    { restaurant: 'Coastal Kitchen', city: 'Chennai', reason: 'Multiple cancelled claims by different NGOs', risk: 'Medium', date: '2026-07-22', action: 'Pending' },
-                  ];
-                  const filtered = rows.filter((r) =>
-                    (detailCityFilter === 'all' || r.city === detailCityFilter) &&
-                    (!detailSearch || r.restaurant.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.reason.toLowerCase().includes(detailSearch.toLowerCase()))
-                  );
-                  if (filtered.length === 0) return <EmptyState icon={AlertTriangle} text="No fraud flags match your filters" />;
-                  return (
-                    <div className="space-y-3">
-                      {filtered.map((r, i) => (
-                        <motion.div
-                          key={i}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: i * 0.05 }}
-                          className="rounded-xl glass-soft p-4"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold text-white">{r.restaurant}</span>
-                                <span className="text-xs text-slate-500">· {r.city}</span>
-                              </div>
-                              <p className="mt-1 text-xs text-slate-400">{r.reason}</p>
-                              <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
-                                <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{r.date}</span>
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
-                                  r.action === 'Pending' ? 'bg-amber-500/15 text-amber-300 ring-amber-500/30' :
-                                  'bg-sky-500/15 text-sky-300 ring-sky-500/30'
-                                }`}>{r.action}</span>
-                              </div>
-                            </div>
-                            <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                              r.risk === 'High' ? 'bg-rose-500/15 text-rose-300 ring-rose-500/30' :
-                              r.risk === 'Medium' ? 'bg-amber-500/15 text-amber-300 ring-amber-500/30' :
-                              'bg-sky-500/15 text-sky-300 ring-sky-500/30'
-                            }`}>{r.risk} Risk</span>
-                          </div>
-                          <div className="mt-3 flex gap-2">
-                            <button className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-300 ring-1 ring-sky-500/30 transition-all hover:bg-sky-500/20">
-                              <Search className="h-3.5 w-3.5" /> Review
-                            </button>
-                            <button className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 ring-1 ring-emerald-500/30 transition-all hover:bg-emerald-500/20">
-                              <CheckCircle2 className="h-3.5 w-3.5" /> Verify
-                            </button>
-                            <button className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 ring-1 ring-rose-500/30 transition-all hover:bg-rose-500/20">
-                              <AlertCircle className="h-3.5 w-3.5" /> Remove
-                            </button>
-                          </div>
-                        </motion.div>
-                      ))}
-                    </div>
-                  );
-                })()}
+                    {/* ===== Fraud Flags ===== */}
+                    {detailModal === 'fraud' && (() => {
+                      const filtered = profileRows.filter((r) =>
+                        (detailCityFilter === 'all' || r.city === detailCityFilter) &&
+                        (!detailSearch || r.full_name.toLowerCase().includes(detailSearch.toLowerCase()) || r.city.toLowerCase().includes(detailSearch.toLowerCase()) || r.organization.toLowerCase().includes(detailSearch.toLowerCase()))
+                      );
+                      if (filtered.length === 0) return <EmptyState icon={AlertTriangle} text="No fraud flags match your filters" />;
+                      return (
+                        <div className="space-y-3">
+                          {filtered.map((r, i) => {
+                            const isRemoved = r.role === 'removed';
+                            const risk = (r.donation_count ?? 100) < 70 ? 'High' : isRemoved ? 'High' : 'Medium';
+                            return (
+                              <motion.div
+                                key={r.id}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: i * 0.05 }}
+                                className="rounded-xl glass-soft p-4"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-semibold text-white">{r.full_name}</span>
+                                      <span className="text-xs text-slate-500">· {r.city || 'Unknown'}</span>
+                                    </div>
+                                    <p className="mt-1 text-xs text-slate-400">{r.organization} — {isRemoved ? 'Removed by admin' : 'Low freshness score'}</p>
+                                    <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
+                                      <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
+                                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+                                        isRemoved ? 'bg-rose-500/15 text-rose-300 ring-rose-500/30' : 'bg-amber-500/15 text-amber-300 ring-amber-500/30'
+                                      }`}>{isRemoved ? 'Removed' : 'Flagged'}</span>
+                                    </div>
+                                  </div>
+                                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
+                                    risk === 'High' ? 'bg-rose-500/15 text-rose-300 ring-rose-500/30' :
+                                    'bg-amber-500/15 text-amber-300 ring-amber-500/30'
+                                  }`}>{risk} Risk</span>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -1144,17 +1162,20 @@ export default function DashboardPage() {
     if (!user) return;
     try {
       if (role === 'restaurant') {
-        const { data } = await supabase.from('donations').select('*').eq('restaurant_id', user.id).order('created_at', { ascending: false });
+        const { data, error } = await supabase.from('donations').select('*').eq('restaurant_id', user.id).order('created_at', { ascending: false });
+        if (error) console.error('Failed to load donations:', error.message);
         if (data) setDonations(data as Donation[]);
       } else if (role === 'ngo') {
-        const { data: d } = await supabase.from('donations').select('*').eq('status', 'available').order('created_at', { ascending: false });
+        const { data: d, error } = await supabase.from('donations').select('*').eq('status', 'available').order('created_at', { ascending: false });
+        if (error) console.error('Failed to load available donations:', error.message);
         if (d) setDonations(d as Donation[]);
       } else if (role === 'admin') {
-        const { data: d } = await supabase.from('donations').select('*').order('created_at', { ascending: false }).limit(50);
+        const { data: d, error } = await supabase.from('donations').select('*').order('created_at', { ascending: false }).limit(50);
+        if (error) console.error('Failed to load all donations:', error.message);
         if (d) setDonations(d as Donation[]);
       }
     } catch (err) {
-      // Silent fallback to dummy data
+      console.error('Dashboard data load error:', err);
     }
   }, [user, role]);
 
@@ -1201,42 +1222,45 @@ export default function DashboardPage() {
 
   const handleClaim = async (donationId: string) => {
     if (!user) return;
-    try {
-      await supabase.from('claims').insert({
-        donation_id: donationId,
-        ngo_id: user.id,
-        ngo_name: user.organization || user.full_name,
-        status: 'claimed',
-      });
-      await supabase.from('donations').update({ status: 'claimed' }).eq('id', donationId);
-      loadData();
-    } catch {
-      // fallback
+    const { error: claimError } = await supabase.from('claims').insert({
+      donation_id: donationId,
+      ngo_id: user.id,
+      ngo_name: user.organization || user.full_name,
+      status: 'claimed',
+    });
+    if (claimError) {
+      console.error('Claim failed:', claimError.message);
+      return;
     }
+    const { error: updateError } = await supabase.from('donations').update({ status: 'claimed' }).eq('id', donationId);
+    if (updateError) {
+      console.error('Donation status update failed:', updateError.message);
+    }
+    loadData();
   };
 
   const handleRemove = async (donation: Donation, reason: string) => {
-    try {
-      await supabase.rpc('admin_remove_donation', {
-        p_donation_id: donation.id,
-        p_reason: reason,
-      });
-      loadData();
-    } catch {
-      // fallback
+    const { error } = await supabase.rpc('admin_remove_donation', {
+      p_donation_id: donation.id,
+      p_reason: reason,
+    });
+    if (error) {
+      console.error('Remove failed:', error.message);
+      throw error;
     }
+    loadData();
   };
 
   const handleAdvance = async (donationId: string, newStatus: 'picked' | 'delivered') => {
-    try {
-      await supabase.rpc('advance_donation_status', {
-        p_donation_id: donationId,
-        p_new_status: newStatus,
-      });
-      loadData();
-    } catch {
-      // fallback
+    const { error } = await supabase.rpc('advance_donation_status', {
+      p_donation_id: donationId,
+      p_new_status: newStatus,
+    });
+    if (error) {
+      console.error('Status advance failed:', error.message);
+      return;
     }
+    loadData();
   };
 
   if (authLoading) {
