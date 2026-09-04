@@ -8,3 +8,15 @@ verify_jwt = false
 
 [functions.ngo-respond]
 verify_jwt = false
+
+[functions.expiry-prediction-agent]
+verify_jwt = false
+
+[functions.route-optimization-agent]
+verify_jwt = false
+
+[functions.fraud-detection-agent]
+verify_jwt = false
+
+[functions.impact-analytics-agent]
+verify_jwt = false

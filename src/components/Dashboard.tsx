@@ -309,7 +309,7 @@ function VolunteerDashboard() {
   );
 }
 
-/* ---------------- Smart Donation AI Agent Panel ---------------- */
+/* ---------------- Donation Matching Agent Panel ---------------- */
 interface ActivityLog {
   id: string;
   action: string;
@@ -525,7 +525,7 @@ export function AgentActivityFeed() {
             <Bot className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h3 className="font-display text-base font-bold text-white">Smart Donation AI Agent</h3>
+            <h3 className="font-display text-base font-bold text-white">Donation Matching Agent</h3>
             <p className="text-xs text-slate-500">Autonomous food donation lifecycle manager</p>
           </div>
           <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400 ring-1 ring-emerald-500/20">

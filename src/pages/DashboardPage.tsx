@@ -17,6 +17,7 @@ import { Counter, Reveal, SectionHeading, TiltCard } from '../components/ui';
 import { latestDonations, monthlyTrend } from '../data/content';
 import DonateFoodModal from '../components/DonateFoodModal';
 import { AgentActivityFeed } from '../components/Dashboard';
+import { AIAgentsPanel } from '../components/AIAgentsPanel';
 
 type RoleId = 'restaurant' | 'ngo' | 'volunteer' | 'admin';
 
@@ -745,7 +746,10 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
         )}
       </AnimatePresence>
 
-      {/* Smart Donation AI Agent Panel */}
+      {/* Donation Matching Agent Management Panel */}
+      <AIAgentsPanel />
+
+      {/* Donation Matching Agent Activity Feed */}
       <AgentActivityFeed />
 
       <div className="grid gap-5 lg:grid-cols-3">

@@ -117,7 +117,7 @@ export default function AvailableDonationsPage() {
     return () => { supabase.removeChannel(channel); };
   }, [loadAvailable, loadMyClaims]);
 
-  // Poll the AI Agent to process pending tasks
+  // Poll the Donation Matching Agent to process pending tasks
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -229,7 +229,7 @@ export default function AvailableDonationsPage() {
         <SectionHeading
           eyebrow="Live Donations"
           title={<>Available <span className="gradient-text">Food Donations</span></>}
-          subtitle="Every new donation appears here instantly. The AI Agent monitors and notifies the nearest NGO in real time."
+          subtitle="Every new donation appears here instantly. The Donation Matching Agent monitors and notifies the nearest NGO in real time."
         />
 
         {/* Stats bar */}
@@ -476,15 +476,15 @@ export default function AvailableDonationsPage() {
           </div>
         </Reveal>
 
-        {/* AI Agent info banner */}
+        {/* Donation Matching Agent info banner */}
         <Reveal className="mt-6">
           <div className="flex items-start gap-3 rounded-2xl glass-soft p-5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15">
               <Leaf className="h-5 w-5 text-primary" />
             </div>
             <div className="text-sm text-slate-300">
-              <span className="font-semibold text-white">AI Agent is monitoring.</span>{' '}
-              The Smart Donation AI Agent automatically detects every new listing, validates it, finds the nearest NGO, and updates the status from Available to Claimed to Delivered. Claimed or completed donations are removed from this list in real time.
+              <span className="font-semibold text-white">Donation Matching Agent is monitoring.</span>{' '}
+              The Donation Matching Agent automatically detects every new listing, validates it, finds the nearest NGO, and updates the status from Available to Claimed to Delivered. Claimed or completed donations are removed from this list in real time.
             </div>
           </div>
         </Reveal>

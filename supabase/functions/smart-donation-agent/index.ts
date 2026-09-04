@@ -1,16 +1,20 @@
 // Smart Donation AI Agent — custom backend agent (no third-party agent framework)
-// Lifecycle: monitor → detect → validate → find nearest NGO → notify → wait →
-//   accept (update status, remove from public list, notify donor) OR
-//   reject/timeout (try next nearest NGO) → log everything.
+// Lifecycle: monitor → detect → validate → score & rank NGOs → recommend →
+//   notify best match → wait → accept (update status, remove from public list,
+//   notify donor) OR reject/timeout (try next nearest NGO) → log everything.
+//
+// Agent 1: Donation Matching Agent
+//   Analyzes food type, quantity, location, urgency/expiry, and NGO requirements
+//   to recommend the best matching NGO. Stores ranked recommendations with match
+//   scores, reasoning, and factor breakdowns in agent_recommendations.
 //
 // This edge function is invoked two ways:
 //   1. Cron-style poll (POST with no body) — picks up pending/timed-out tasks.
 //   2. Webhook from NGO response (POST {task_id, ngo_id, response}) — processes
 //      an accept/reject immediately without waiting for the timeout.
 //
-// The agent uses Gemini only for optional reasoning (validation heuristics).
-// All monitoring, workflow execution, notifications, status updates, and
-// automation are handled by this custom agent code.
+// The agent uses Gemini for match reasoning. All monitoring, workflow execution,
+// notifications, status updates, and automation are handled by this custom agent code.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -82,7 +86,7 @@ Rules: Reject if expiry_hours < 1 or freshness_score < 40 or quantity <= 0. Othe
     const apiKey = await getApiKey();
     if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -113,12 +117,155 @@ Rules: Reject if expiry_hours < 1 or freshness_score < 40 or quantity <= 0. Othe
   }
 }
 
-// ============ Find nearest NGOs ============
-async function findNearestNGOs(
+// ============ Gemini match reasoning ============
+async function geminiMatchReasoning(
+  donation: any,
+  ngo: any,
+  factors: Record<string, number>,
+  distance: number,
+): Promise<string> {
+  try {
+    const prompt = `You are a food donation matching analyst. Explain why this NGO is a good (or poor) match for this donation in 1-2 sentences. Be specific and concise.
+
+Donation:
+- Food: ${donation.food_item} (${donation.category})
+- Quantity: ${donation.quantity} servings, ${donation.meals} meals
+- Location: ${donation.city}
+- Expiry: ${donation.expiry_hours}h remaining
+- Freshness: ${donation.freshness_score}/100
+
+NGO:
+- Name: ${ngo.name}
+- City: ${ngo.city} (${distance.toFixed(1)} km away)
+- Capacity: ${ngo.capacity} meals/day
+- Category: ${ngo.category}
+
+Factor scores (0-100): distance=${factors.distance}, capacity=${factors.capacity}, category_fit=${factors.category_fit}, urgency=${factors.urgency}, freshness=${factors.freshness}
+
+Return only the explanation text, no JSON.`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const apiKey = await getApiKey();
+    if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 150 },
+        }),
+        signal: controller.signal,
+      },
+    );
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`Gemini ${res.status}`);
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return text.trim() || generateFallbackReasoning(donation, ngo, factors, distance);
+  } catch {
+    return generateFallbackReasoning(donation, ngo, factors, distance);
+  }
+}
+
+function generateFallbackReasoning(
+  donation: any,
+  ngo: any,
+  factors: Record<string, number>,
+  distance: number,
+): string {
+  const parts: string[] = [];
+  if (factors.distance >= 80) parts.push(`${ngo.name} is located just ${distance.toFixed(1)} km away in ${ngo.city}`);
+  else if (factors.distance >= 50) parts.push(`${ngo.name} is ${distance.toFixed(1)} km away in ${ngo.city}`);
+  else parts.push(`${ngo.name} is ${distance.toFixed(1)} km away — distance may affect freshness`);
+
+  if (factors.capacity >= 80) parts.push(`has capacity (${ngo.capacity} meals/day) to handle ${donation.meals} meals`);
+  if (factors.category_fit >= 75) parts.push(`category fit (${ngo.category}) aligns well with ${donation.category}`);
+  if (factors.urgency >= 70) parts.push(`can respond quickly given ${donation.expiry_hours}h expiry`);
+  if (factors.freshness >= 80) parts.push(`freshness score ${donation.freshness_score}/100 is excellent`);
+
+  return parts.join(', ') + '.';
+}
+
+// ============ Compute match factors for a single NGO ============
+function computeMatchFactors(
+  donation: any,
+  ngo: any,
+  distance: number,
+): Record<string, number> {
+  // Distance score: <5km = 100, <20km = 80, <50km = 60, <100km = 40, else 20
+  let distanceScore: number;
+  if (distance < 5) distanceScore = 100;
+  else if (distance < 20) distanceScore = 80;
+  else if (distance < 50) distanceScore = 60;
+  else if (distance < 100) distanceScore = 40;
+  else distanceScore = 20;
+
+  // Capacity score: NGO capacity vs donation meals
+  // If capacity >= 2x meals, score 100. If capacity >= meals, score 80.
+  // If capacity < meals, scale down.
+  const capacityRatio = ngo.capacity > 0 ? ngo.capacity / donation.meals : 0;
+  let capacityScore: number;
+  if (capacityRatio >= 2) capacityScore = 100;
+  else if (capacityRatio >= 1) capacityScore = 80;
+  else if (capacityRatio >= 0.5) capacityScore = 60;
+  else capacityScore = 40;
+
+  // Category fit: how well does the NGO category match the donation category
+  const categoryMap: Record<string, string[]> = {
+    'Midday Meal': ['Cooked Food', 'Vegetarian', 'Rice', 'Curry'],
+    'Food Rescue': ['Cooked Food', 'Bakery', 'Vegetarian', 'Non-Veg', 'Mixed'],
+    'Relief & Aid': ['Cooked Food', 'Dry Food', 'Mixed', 'Vegetarian'],
+    'Child Welfare': ['Cooked Food', 'Vegetarian', 'Dairy', 'Bakery'],
+    'Food Bank': ['Dry Food', 'Grains', 'Canned', 'Bakery'],
+    'Community Kitchen': ['Cooked Food', 'Vegetarian', 'Curry', 'Rice'],
+    'Meal Packaging': ['Dry Food', 'Grains', 'Mixed'],
+  };
+  const ngoAccepts = categoryMap[ngo.category] || ['Mixed'];
+  let categoryScore: number;
+  if (ngoAccepts.includes(donation.category)) categoryScore = 90;
+  else if (ngoAccepts.includes('Mixed') || ngoAccepts.includes('Cooked Food')) categoryScore = 70;
+  else categoryScore = 50;
+
+  // Urgency score: based on expiry hours (lower expiry = higher urgency, NGO must be close)
+  let urgencyScore: number;
+  if (donation.expiry_hours <= 2) urgencyScore = distance < 10 ? 90 : 40;
+  else if (donation.expiry_hours <= 6) urgencyScore = distance < 30 ? 85 : 55;
+  else if (donation.expiry_hours <= 12) urgencyScore = 75;
+  else urgencyScore = 80;
+
+  // Freshness score: direct from donation, adjusted by expiry
+  let freshnessScore = donation.freshness_score;
+  if (donation.expiry_hours < 3) freshnessScore -= 10;
+  freshnessScore = Math.max(0, Math.min(100, freshnessScore));
+
+  return {
+    distance: distanceScore,
+    capacity: capacityScore,
+    category_fit: categoryScore,
+    urgency: urgencyScore,
+    freshness: freshnessScore,
+  };
+}
+
+// ============ Compute overall match score from factors ============
+function computeOverallScore(factors: Record<string, number>): number {
+  // Weighted average: distance 30%, capacity 20%, category 20%, urgency 15%, freshness 15%
+  const weights = { distance: 0.30, capacity: 0.20, category_fit: 0.20, urgency: 0.15, freshness: 0.15 };
+  let score = 0;
+  for (const [key, weight] of Object.entries(weights)) {
+    score += (factors[key] || 0) * weight;
+  }
+  return Math.round(score);
+}
+
+// ============ Find and rank all candidate NGOs ============
+async function rankNGOs(
   donation: any,
   excludeIds: string[],
 ): Promise<any[]> {
-  // Get NGOs in the same city first, then all others, sorted by distance
   const { data: allNgos, error } = await supabase
     .from("ngos")
     .select("id, name, city, lat, lng, capacity, category")
@@ -128,7 +275,7 @@ async function findNearestNGOs(
 
   const excludeSet = new Set(excludeIds);
 
-  const withDistance = allNgos
+  const candidates = allNgos
     .filter((n) => !excludeSet.has(n.id))
     .map((n) => {
       let distance = 9999;
@@ -139,12 +286,51 @@ async function findNearestNGOs(
         );
       }
       // Same city gets a distance bonus (priority)
-      if (n.city === donation.city) distance -= 100;
-      return { ...n, distance };
+      if (n.city === donation.city) distance -= 50;
+      const factors = computeMatchFactors(donation, n, Math.max(0, distance));
+      const matchScore = computeOverallScore(factors);
+      return { ...n, distance: Math.max(0, distance), factors, matchScore };
     })
-    .sort((a, b) => a.distance - b.distance);
+    .sort((a, b) => b.matchScore - a.matchScore);
 
-  return withDistance;
+  return candidates;
+}
+
+// ============ Generate and save recommendations ============
+async function generateRecommendations(
+  taskId: string,
+  donation: any,
+  rankedNgos: any[],
+): Promise<void> {
+  // Take top 5 candidates and generate reasoning for each
+  const topCandidates = rankedNgos.slice(0, 5);
+  const recommendations: any[] = [];
+
+  for (const ngo of topCandidates) {
+    const reasoning = await geminiMatchReasoning(donation, ngo, ngo.factors, ngo.distance);
+    recommendations.push({
+      ngo_id: ngo.id,
+      match_score: ngo.matchScore,
+      reasoning,
+      match_factors: ngo.factors,
+      distance_km: ngo.distance.toFixed(2),
+      selected: false, // will set to true for the top pick below
+    });
+  }
+
+  // Mark the top recommendation as selected
+  if (recommendations.length > 0) {
+    recommendations[0].selected = true;
+  }
+
+  // Save to database via SECURITY DEFINER function
+  if (recommendations.length > 0) {
+    await supabase.rpc("save_agent_recommendations", {
+      p_task_id: taskId,
+      p_donation_id: donation.id,
+      p_recommendations: recommendations,
+    });
+  }
 }
 
 // ============ Log helper ============
@@ -245,10 +431,6 @@ async function processTask(task: {
     await log("validation_failed", taskId, donationId, null, {
       reason: validation.reason,
     });
-    await supabase.rpc("update_donation_status", {
-      p_donation_id: donationId,
-      p_status: "available", // keep available but flag
-    });
     await supabase.from("agent_tasks").update({
       status: "failed",
       error: `Validation failed: ${validation.reason}`,
@@ -263,11 +445,11 @@ async function processTask(task: {
     return;
   }
 
-  // Step 2: Find nearest NGO (excluding already-notified ones)
+  // Step 2: Rank all candidate NGOs with match scores
   const excludeIds = task.notified_ngo_ids || [];
-  const candidates = await findNearestNGOs(donation, excludeIds);
+  const ranked = await rankNGOs(donation, excludeIds);
 
-  if (candidates.length === 0) {
+  if (ranked.length === 0) {
     await log("no_ngos_available", taskId, donationId);
     await supabase.from("agent_tasks").update({
       status: "failed",
@@ -283,20 +465,29 @@ async function processTask(task: {
     return;
   }
 
-  // Pick the nearest NGO
-  const ngo = candidates[0];
+  // Step 3: Generate and save recommendations with AI reasoning
+  await generateRecommendations(taskId, donation, ranked);
+  await log("recommendations_generated", taskId, donationId, null, {
+    count: Math.min(ranked.length, 5),
+    top_score: ranked[0]?.matchScore,
+    top_ngo: ranked[0]?.name,
+  });
+
+  // Step 4: Pick the best match and notify
+  const ngo = ranked[0];
   const newNotifiedIds = [...excludeIds, ngo.id];
 
   await log("ngo_notified", taskId, donationId, ngo.id, {
     ngo_name: ngo.name,
     ngo_city: ngo.city,
     distance_km: ngo.distance,
+    match_score: ngo.matchScore,
   });
 
   // Notify the NGO
   await notify(
     taskId, donationId, "ngo",
-    `New food donation available: ${donation.food_item} (${donation.quantity} servings, ${donation.meals} meals) from ${donation.restaurant_name} in ${donation.city}. Freshness score: ${donation.freshness_score}/100. Please accept or reject.`,
+    `New food donation available: ${donation.food_item} (${donation.quantity} servings, ${donation.meals} meals) from ${donation.restaurant_name} in ${donation.city}. Freshness score: ${donation.freshness_score}/100. Match score: ${ngo.matchScore}/100. Please accept or reject.`,
     "accept_request",
     undefined,
     ngo.id,
@@ -405,8 +596,6 @@ async function processNGOResponse(
     await log("task_completed", taskId, task.donation_id, ngoId);
 
     // Auto-complete delivery after a short delay (simulated pickup + delivery)
-    // In production this would wait for volunteer assignment, but for the
-    // automated lifecycle we transition to 'delivered' after the claim.
     EdgeRuntime.waitUntil((async () => {
       await new Promise((r) => setTimeout(r, 10_000)); // 10s simulated delivery
       await supabase.rpc("complete_donation_delivery", {
@@ -438,7 +627,7 @@ async function processNGOResponse(
 
     // Re-queue the task for the next poll cycle
     await supabase.from("agent_tasks").update({
-      status: "validating", // will be reprocessed immediately
+      status: "validating",
       current_ngo_id: null,
       timeout_at: null,
     }).eq("id", taskId);
