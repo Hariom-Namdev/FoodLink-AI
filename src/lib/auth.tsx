@@ -13,6 +13,31 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 
+const MAX_PROFILE_RETRIES = 5;
+const PROFILE_RETRY_DELAY_MS = 400;
+
+async function fetchProfile(): Promise<Profile | null> {
+  // Use SECURITY DEFINER RPC to bypass RLS — works even if policies are misconfigured
+  const { data, error } = await supabase.rpc('get_my_profile');
+  if (error) throw error;
+  return (data as Profile) ?? null;
+}
+
+async function loadProfileWithRetry(): Promise<Profile | null> {
+  for (let attempt = 0; attempt < MAX_PROFILE_RETRIES; attempt++) {
+    try {
+      const profile = await fetchProfile();
+      if (profile) return profile;
+    } catch (err) {
+      console.warn(`Profile fetch attempt ${attempt + 1} failed:`, err);
+    }
+    if (attempt < MAX_PROFILE_RETRIES - 1) {
+      await new Promise((r) => setTimeout(r, PROFILE_RETRY_DELAY_MS));
+    }
+  }
+  return null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -23,22 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { isMounted.current = false; };
   }, []);
 
-  const loadProfile = useCallback(async (uid: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', uid)
-        .maybeSingle();
-      if (error) {
-        console.warn('Failed to load profile:', error.message);
-        return;
-      }
-      if (data && isMounted.current) {
-        setUser(data as Profile);
-      }
-    } catch (err) {
-      console.warn('Profile load error:', err);
+  const loadProfile = useCallback(async () => {
+    const profile = await loadProfileWithRetry();
+    if (isMounted.current) {
+      setUser(profile);
     }
   }, []);
 
@@ -50,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (session?.user) {
-        await loadProfile(session.user.id);
+        await loadProfile();
       } else {
         if (isMounted.current) setUser(null);
       }
@@ -69,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) {
           console.warn('Initial session error:', error.message);
         } else if (session?.user && mounted) {
-          await loadProfile(session.user.id);
+          await loadProfile();
         }
       } catch (err) {
         console.warn('Init session error:', err);
@@ -79,17 +92,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     init();
 
+    // Defer async work inside onAuthStateChange to avoid the known Supabase deadlock
+    // where calling Supabase queries synchronously in the callback blocks the auth layer.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
-      if (event === 'SIGNED_OUT' || !session) {
-        setUser(null);
-        return;
-      }
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        if (session?.user) {
-          loadProfile(session.user.id);
+      setTimeout(() => {
+        if (!mounted) return;
+        if (event === 'SIGNED_OUT' || !session) {
+          setUser(null);
+          return;
         }
-      }
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') && session?.user) {
+          loadProfile();
+        }
+      }, 0);
     });
 
     return () => {
@@ -107,7 +123,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       if (error) return { error: error.message };
       if (data.session?.user) {
-        await loadProfile(data.session.user.id);
+        const profile = await loadProfileWithRetry();
+        if (profile && isMounted.current) {
+          setUser(profile);
+        } else if (isMounted.current) {
+          // Profile trigger may have failed — create profile via SECURITY DEFINER RPC
+          const { data: upserted, error: upsertError } = await supabase.rpc('upsert_my_profile', {
+            p_full_name: meta.full_name,
+            p_role: meta.role,
+            p_organization: meta.organization,
+            p_phone: meta.phone,
+            p_city: meta.city,
+          });
+          if (!upsertError && upserted && isMounted.current) {
+            setUser(upserted as Profile);
+          }
+        }
       }
       return { error: null };
     } catch (err: any) {
@@ -120,7 +151,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) return { error: error.message };
       if (data.user) {
-        await loadProfile(data.user.id);
+        const profile = await loadProfileWithRetry();
+        if (profile && isMounted.current) {
+          setUser(profile);
+        } else {
+          return { error: 'Account profile not found. Please contact support.' };
+        }
       }
       return { error: null };
     } catch (err: any) {

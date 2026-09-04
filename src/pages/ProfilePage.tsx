@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { User, Building2, Phone, MapPin, Mail, Shield, Save, LogOut, ChefHat, HeartHandshake, Bike } from 'lucide-react';
@@ -19,10 +19,13 @@ export default function ProfilePage() {
     city: user?.city || '',
   });
 
-  if (!user) {
-    navigate('/auth');
-    return null;
-  }
+  useEffect(() => {
+    if (!user) {
+      navigate('/auth');
+    }
+  }, [user, navigate]);
+
+  if (!user) return null;
 
   const roleIcon = user.role === 'restaurant' ? ChefHat : user.role === 'ngo' ? HeartHandshake : user.role === 'volunteer' ? Bike : Shield;
   const RoleIcon = roleIcon;
