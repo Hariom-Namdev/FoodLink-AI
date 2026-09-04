@@ -8,6 +8,9 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
+  demoActivityLogs, demoAgentTasks,
+} from '../data/demoData';
+import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, RadialBarChart, RadialBar,
 } from 'recharts';
@@ -450,7 +453,8 @@ export function AgentActivityFeed() {
         .select('id, action, ngo_id, details, created_at')
         .order('created_at', { ascending: false })
         .limit(30);
-      if (mounted && data) setLogs(data);
+      if (mounted && data && data.length > 0) setLogs(data);
+      else if (mounted) setLogs(demoActivityLogs as unknown as ActivityLog[]);
     };
 
     const loadTasks = async () => {
@@ -463,7 +467,7 @@ export function AgentActivityFeed() {
         `)
         .order('updated_at', { ascending: false })
         .limit(10);
-      if (mounted && data) {
+      if (mounted && data && data.length > 0) {
         const tasksWithNgo = await Promise.all((data as unknown as AgentTask[]).map(async (t) => {
           if (t.current_ngo_id) {
             const { data: ngo } = await supabase
@@ -476,6 +480,8 @@ export function AgentActivityFeed() {
           return { ...t, current_ngo: null };
         }));
         setTasks(tasksWithNgo);
+      } else if (mounted) {
+        setTasks(demoAgentTasks as unknown as AgentTask[]);
       }
       if (mounted) setLoading(false);
     };

@@ -66,6 +66,8 @@ export const ngos: NGO[] = [
   { name: "Khidmat Foundation", city: "Kolkata", served: 270000, logo: "🤲", category: "Food Bank", rating: 4.1, verified: true, phone: "+91-33-2289-1234", email: "info@khidmat.org", address: "Kolkata, West Bengal", capacity: 7000, established: 2015 },
   { name: "Aahar Foundation", city: "Pune", served: 350000, logo: "🍱", category: "Food Rescue", rating: 4.2, verified: true, phone: "+91-20-3010-1234", email: "info@aaharfoundation.org", address: "Pune, Maharashtra", capacity: 9000, established: 2014 },
   { name: "Jeevan Anand", city: "Surat", served: 220000, logo: "🌿", category: "Community Kitchen", rating: 4.0, verified: true, phone: "+91-261-245-1234", email: "info@jeevananand.org", address: "Surat, Gujarat", capacity: 6000, established: 2016 },
+  { name: "Vaishnodevi Annadata", city: "Kolkata", served: 430000, logo: "🫗", category: "Food Rescue", rating: 4.3, verified: true, phone: "+91-33-2476-8901", email: "annadata@vaishnodevi.org", address: "Kolkata, West Bengal", capacity: 11000, established: 2013 },
+  { name: "Sahyadri Food Mission", city: "Nagpur", served: 260000, logo: "🌽", category: "Food Bank", rating: 4.1, verified: true, phone: "+91-712-280-3456", email: "info@sahyadrifoodmission.org", address: "Nagpur, Maharashtra", capacity: 7000, established: 2015 },
 ];
 
 export const ngoCategories = [

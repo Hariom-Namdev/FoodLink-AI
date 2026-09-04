@@ -40,7 +40,7 @@ Deno.serve(async (req: Request) => {
     // Fetch all claims
     const { data: claims, error: cErr } = await supabase
       .from('claims')
-      .select('id, donation_id, completed_at, created_at')
+      .select('id, donation_id, status, created_at')
       .order('created_at', 'desc')
       .limit(500);
 
@@ -53,7 +53,7 @@ Deno.serve(async (req: Request) => {
       .eq('verified', true);
 
     const donations = allDonations || [];
-    const completedClaims = (claims || []).filter((c: any) => c.completed_at);
+    const completedClaims = (claims || []).filter((c: any) => c.status === 'delivered' || c.status === 'completed');
 
     // Core metrics
     const totalDonations = donations.length;
@@ -162,7 +162,7 @@ Deno.serve(async (req: Request) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : (typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err));
     return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

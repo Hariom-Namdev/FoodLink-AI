@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Store, HeartHandshake, Bike, ShieldCheck, Utensils, Leaf, Users,
   Package, Navigation, Trophy, Award, Zap, ArrowUpRight,
   CheckCircle2, AlertTriangle, Download, Plus, X, Loader2, AlertCircle,
-  Search, Clock, Filter,
+  Search, Clock, Filter, Check,
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
@@ -15,9 +15,53 @@ import { useAuth } from '../lib/auth';
 import { supabase, type Donation } from '../lib/supabase';
 import { Counter, Reveal, SectionHeading, TiltCard } from '../components/ui';
 import { latestDonations, monthlyTrend } from '../data/content';
+import {
+  demoDonations, demoRestaurants, demoNGOs, demoVolunteers, demoFraudFlags,
+  demoAdminStats,
+} from '../data/demoData';
 import DonateFoodModal from '../components/DonateFoodModal';
 import { AgentActivityFeed } from '../components/Dashboard';
 import { AIAgentsPanel } from '../components/AIAgentsPanel';
+
+// Toast notification for demo-mode feedback
+interface Toast { id: number; msg: string; type: 'success' | 'info' | 'error'; }
+let toastId = 0;
+function useToasts() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const push = useCallback((msg: string, type: Toast['type'] = 'info') => {
+    const id = ++toastId;
+    setToasts((prev) => [...prev, { id, msg, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3500);
+  }, []);
+  return { toasts, push };
+}
+
+function ToastContainer({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div className="fixed bottom-6 right-6 z-[200] flex flex-col gap-2">
+      <AnimatePresence>
+        {toasts.map((t) => (
+          <motion.div
+            key={t.id}
+            initial={{ opacity: 0, x: 40, scale: 0.9 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 40, scale: 0.9 }}
+            className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold shadow-card ${
+              t.type === 'success' ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40' :
+              t.type === 'error' ? 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40' :
+              'bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/40'
+            }`}
+          >
+            {t.type === 'success' && <Check className="h-4 w-4" />}
+            {t.type === 'error' && <AlertCircle className="h-4 w-4" />}
+            {t.type === 'info' && <CheckCircle2 className="h-4 w-4" />}
+            {t.msg}
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 type RoleId = 'restaurant' | 'ngo' | 'volunteer' | 'admin';
 
@@ -97,7 +141,7 @@ function exportCSV(data: any[], filename: string) {
 }
 
 /* ---------------- Restaurant Dashboard ---------------- */
-function RestaurantDashboard({ donations, onDonate }: { donations: Donation[]; onDonate: () => void }) {
+function RestaurantDashboard({ donations, onDonate, onExport }: { donations: Donation[]; onDonate: () => void; onExport: () => void }) {
   const userDonations = donations;
   const totalMeals = userDonations.reduce((s, d) => s + d.meals, 0) || 38400;
   const co2Saved = Math.round(totalMeals * 0.22) || 8420;
@@ -107,7 +151,7 @@ function RestaurantDashboard({ donations, onDonate }: { donations: Donation[]; o
       <div className="flex items-center justify-between">
         <h3 className="font-display text-lg font-bold text-white">Restaurant Overview</h3>
         <div className="flex gap-2">
-          <button onClick={() => exportCSV(userDonations.length ? userDonations : restaurantDonations, 'my-donations.csv')} className="btn-ghost !py-2 !px-4 text-xs">
+          <button onClick={onExport} className="btn-ghost !py-2 !px-4 text-xs">
             <Download className="h-3.5 w-3.5" /> Export CSV
           </button>
           <button onClick={onDonate} className="btn-primary !py-2 !px-4 text-xs">
@@ -217,19 +261,84 @@ function RestaurantDashboard({ donations, onDonate }: { donations: Donation[]; o
 }
 
 /* ---------------- NGO Dashboard ---------------- */
+const ngoClaimedHistory = [
+  { id: 'CLM-3201', restaurant: 'Haldiram', food: 'Vegetable Thali', meals: 85, city: 'Mumbai', status: 'Delivered', date: '04 Sep', volunteer: 'Arjun S.' },
+  { id: 'CLM-3200', restaurant: "Domino's", food: 'Pizza (Large x12)', meals: 140, city: 'Delhi', status: 'Picked', date: '04 Sep', volunteer: 'Priya R.' },
+  { id: 'CLM-3199', restaurant: 'Theobrama', food: 'Pastry & Bread', meals: 60, city: 'Mumbai', status: 'Delivered', date: '03 Sep', volunteer: 'Karan M.' },
+  { id: 'CLM-3198', restaurant: 'Bikanervala', food: 'Sweets & Snacks', meals: 95, city: 'Delhi', status: 'Delivered', date: '03 Sep', volunteer: 'Sneha P.' },
+  { id: 'CLM-3197', restaurant: 'Saravana Bhavan', food: 'South Indian Meals', meals: 180, city: 'Chennai', status: 'Delivered', date: '02 Sep', volunteer: 'Vikram N.' },
+  { id: 'CLM-3196', restaurant: 'Mainland China', food: 'Indo-Chinese Buffet', meals: 75, city: 'Bengaluru', status: 'Delivered', date: '02 Sep', volunteer: 'Anita K.' },
+  { id: 'CLM-3195', restaurant: 'Paradise Biryani', food: 'Hyderabadi Biryani', meals: 120, city: 'Hyderabad', status: 'Delivered', date: '01 Sep', volunteer: 'Rahul D.' },
+  { id: 'CLM-3194', restaurant: "McDonald's", food: 'Burgers & Fries', meals: 50, city: 'Pune', status: 'Delivered', date: '01 Sep', volunteer: 'Meera J.' },
+];
+
+const ngoCompletedPickups = [
+  { id: 'PCK-3201', restaurant: 'Haldiram', food: 'Vegetable Thali', meals: 85, city: 'Mumbai', date: '04 Sep', pickupTime: '11 min', deliveryTime: '14 min', rating: 5 },
+  { id: 'PCK-3199', restaurant: 'Theobrama', food: 'Pastry & Bread', meals: 60, city: 'Mumbai', date: '03 Sep', pickupTime: '8 min', deliveryTime: '11 min', rating: 5 },
+  { id: 'PCK-3198', restaurant: 'Bikanervala', food: 'Sweets & Snacks', meals: 95, city: 'Delhi', date: '03 Sep', pickupTime: '12 min', deliveryTime: '19 min', rating: 4 },
+  { id: 'PCK-3197', restaurant: 'Saravana Bhavan', food: 'South Indian Meals', meals: 180, city: 'Chennai', date: '02 Sep', pickupTime: '15 min', deliveryTime: '28 min', rating: 5 },
+  { id: 'PCK-3196', restaurant: 'Mainland China', food: 'Indo-Chinese Buffet', meals: 75, city: 'Bengaluru', date: '02 Sep', pickupTime: '10 min', deliveryTime: '16 min', rating: 5 },
+  { id: 'PCK-3195', restaurant: 'Paradise Biryani', food: 'Hyderabadi Biryani', meals: 120, city: 'Hyderabad', date: '01 Sep', pickupTime: '13 min', deliveryTime: '21 min', rating: 4 },
+  { id: 'PCK-3194', restaurant: "McDonald's", food: 'Burgers & Fries', meals: 50, city: 'Pune', date: '01 Sep', pickupTime: '6 min', deliveryTime: '9 min', rating: 5 },
+  { id: 'PCK-3193', restaurant: 'Barbeque Nation', food: 'Grilled Buffet', meals: 200, city: 'Bengaluru', date: '31 Aug', pickupTime: '18 min', deliveryTime: '32 min', rating: 5 },
+];
+
+const ngoPeopleServed = [
+  { city: 'Mumbai', people: 42000, shelters: 18, color: '#22C55E' },
+  { city: 'Delhi', people: 38000, shelters: 22, color: '#84CC16' },
+  { city: 'Bengaluru', people: 28000, shelters: 14, color: '#10B981' },
+  { city: 'Chennai', people: 21000, shelters: 11, color: '#a3e635' },
+  { city: 'Hyderabad', people: 15000, shelters: 9, color: '#65a30d' },
+  { city: 'Pune', people: 12000, shelters: 7, color: '#16A34A' },
+];
+
+const ngoShelterList = [
+  { name: 'Robin Hood Army — Mumbai', city: 'Mumbai', people: 3200, meals: 8500, status: 'Active' },
+  { name: 'Feeding India — Delhi', city: 'Delhi', people: 2800, meals: 9200, status: 'Active' },
+  { name: 'Akshaya Patra — Bengaluru', city: 'Bengaluru', people: 4100, meals: 12000, status: 'Active' },
+  { name: 'Delhi Food Bank', city: 'Delhi', people: 1900, meals: 5400, status: 'Active' },
+  { name: 'No Food Waste — Coimbatore', city: 'Coimbatore', people: 1500, meals: 3800, status: 'Active' },
+  { name: 'Goonj — Delhi', city: 'Delhi', people: 2200, meals: 6100, status: 'Active' },
+  { name: 'Slum Dwellers Aid — Mumbai', city: 'Mumbai', people: 1800, meals: 4200, status: 'Full' },
+  { name: 'Hope Foundation — Chennai', city: 'Chennai', people: 2400, meals: 7800, status: 'Active' },
+];
+
+const ngoActiveVolunteers = [
+  { name: 'Arjun Sharma', city: 'Mumbai', deliveries: 142, rating: 4.9, status: 'On Delivery', avatar: 'AS' },
+  { name: 'Priya Reddy', city: 'Delhi', deliveries: 128, rating: 4.8, status: 'Available', avatar: 'PR' },
+  { name: 'Karan Mehta', city: 'Mumbai', deliveries: 95, rating: 5.0, status: 'On Delivery', avatar: 'KM' },
+  { name: 'Sneha Patel', city: 'Delhi', deliveries: 110, rating: 4.7, status: 'Available', avatar: 'SP' },
+  { name: 'Vikram Nair', city: 'Chennai', deliveries: 87, rating: 4.9, status: 'On Delivery', avatar: 'VN' },
+  { name: 'Anita Kumar', city: 'Bengaluru', deliveries: 134, rating: 4.8, status: 'Available', avatar: 'AK' },
+  { name: 'Rahul Das', city: 'Hyderabad', deliveries: 76, rating: 4.6, status: 'On Delivery', avatar: 'RD' },
+  { name: 'Meera Joshi', city: 'Pune', deliveries: 102, rating: 4.9, status: 'Available', avatar: 'MJ' },
+];
+
+type NGOModalType = 'claimed' | 'pickups' | 'people' | 'volunteers' | null;
+
 function NGODashboard({ donations, onClaim, onAdvance }: { donations: Donation[]; onClaim: (id: string) => void; onAdvance: (id: string, status: 'picked' | 'delivered') => void }) {
   const available = donations.filter((d) => d.status === 'available');
   const myClaims = donations.filter((d) => d.status === 'claimed' || d.status === 'picked');
   const displayDonations = available.length ? available : latestDonations.filter((d) => d.status === 'available');
+  const [modalType, setModalType] = useState<NGOModalType>(null);
+
+  const closeModal = () => setModalType(null);
+
+  const modalConfig: Record<NonNullable<NGOModalType>, { title: string; icon: any; color: string }> = {
+    claimed: { title: 'Claimed Donations', icon: Package, color: 'from-emerald-500 to-green-600' },
+    pickups: { title: 'Completed Pickups', icon: CheckCircle2, color: 'from-lime-500 to-emerald-600' },
+    people: { title: 'People Served', icon: Users, color: 'from-green-500 to-teal-600' },
+    volunteers: { title: 'Active Volunteers', icon: Bike, color: 'from-teal-500 to-green-600' },
+  };
 
   return (
     <div className="space-y-6">
       <h3 className="font-display text-lg font-bold text-white">NGO Overview</h3>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={Package} label="Claimed Donations" value={842} suffix="+" trend="18%" color="from-emerald-500 to-green-600" />
-        <StatCard icon={CheckCircle2} label="Completed Pickups" value={790} suffix="" trend="14%" color="from-lime-500 to-emerald-600" />
-        <StatCard icon={Users} label="People Served" value={156000} suffix="+" trend="22%" color="from-green-500 to-teal-600" />
-        <StatCard icon={Bike} label="Active Volunteers" value={48} suffix="" color="from-teal-500 to-green-600" />
+        <StatCard icon={Package} label="Claimed Donations" value={842} suffix="+" trend="18%" color="from-emerald-500 to-green-600" onClick={() => setModalType('claimed')} />
+        <StatCard icon={CheckCircle2} label="Completed Pickups" value={790} suffix="" trend="14%" color="from-lime-500 to-emerald-600" onClick={() => setModalType('pickups')} />
+        <StatCard icon={Users} label="People Served" value={156000} suffix="+" trend="22%" color="from-green-500 to-teal-600" onClick={() => setModalType('people')} />
+        <StatCard icon={Bike} label="Active Volunteers" value={48} suffix="" color="from-teal-500 to-green-600" onClick={() => setModalType('volunteers')} />
       </div>
 
       {/* My Active Claims — Mark as Picked / Delivered */}
@@ -332,20 +441,313 @@ function NGODashboard({ donations, onClaim, onAdvance }: { donations: Donation[]
           </div>
         </Reveal>
       </div>
+
+      {/* NGO stat card detail modal */}
+      <AnimatePresence>
+        {modalType && (() => {
+          const cfg = modalConfig[modalType];
+          const ModalIcon = cfg.icon;
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+              onClick={closeModal}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-3xl glass shadow-card"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal header */}
+                <div className="flex items-center justify-between border-b border-white/5 px-6 py-5">
+                  <div className="flex items-center gap-3">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${cfg.color} shadow-glow`}>
+                      <ModalIcon className="h-5 w-5 text-white" />
+                    </div>
+                    <h3 className="font-display text-lg font-bold text-white">{cfg.title}</h3>
+                  </div>
+                  <button onClick={closeModal} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                {/* Modal body */}
+                <div className="max-h-[65vh] overflow-y-auto px-6 py-5">
+                  {/* Claimed Donations */}
+                  {modalType === 'claimed' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-emerald-400">842</div>
+                          <div className="text-[10px] uppercase text-slate-500">Total Claimed</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-amber-400">52</div>
+                          <div className="text-[10px] uppercase text-slate-500">In Progress</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-sky-400">93.8%</div>
+                          <div className="text-[10px] uppercase text-slate-500">Completion Rate</div>
+                        </div>
+                      </div>
+                      {ngoClaimedHistory.map((c, i) => (
+                        <motion.div
+                          key={c.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.04 }}
+                          className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3"
+                        >
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
+                            <Package className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold text-white">{c.restaurant} · {c.food}</div>
+                            <div className="flex gap-3 text-xs text-slate-400">
+                              <span>{c.meals} meals</span><span>· {c.city}</span><span>· {c.date}</span><span>· {c.volunteer}</span>
+                            </div>
+                          </div>
+                          <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
+                            c.status === 'Delivered' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' : 'bg-amber-500/15 text-amber-300 ring-amber-500/30'
+                          }`}>{c.status}</span>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Completed Pickups */}
+                  {modalType === 'pickups' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-lime-400">790</div>
+                          <div className="text-[10px] uppercase text-slate-500">Completed</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-emerald-400">14 min</div>
+                          <div className="text-[10px] uppercase text-slate-500">Avg Pickup</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-amber-400">4.8</div>
+                          <div className="text-[10px] uppercase text-slate-500">Avg Rating</div>
+                        </div>
+                      </div>
+                      {ngoCompletedPickups.map((p, i) => (
+                        <motion.div
+                          key={p.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.04 }}
+                          className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3"
+                        >
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/15">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold text-white">{p.restaurant} · {p.food}</div>
+                            <div className="flex gap-3 text-xs text-slate-400">
+                              <span>{p.meals} meals</span><span>· {p.city}</span><span>· {p.date}</span><span>· Pickup {p.pickupTime}</span><span>· Delivery {p.deliveryTime}</span>
+                            </div>
+                          </div>
+                          <span className="text-xs text-amber-400">{'★'.repeat(p.rating)}</span>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* People Served */}
+                  {modalType === 'people' && (
+                    <div className="space-y-5">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl glass-soft p-4 text-center">
+                          <div className="font-display text-2xl font-bold text-green-400">156,000</div>
+                          <div className="text-xs text-slate-500">Total People Served</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-4 text-center">
+                          <div className="font-display text-2xl font-bold text-teal-400">81</div>
+                          <div className="text-xs text-slate-500">Partner Shelters</div>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl glass p-5">
+                        <h4 className="mb-4 text-sm font-semibold text-white">People Served by City</h4>
+                        <div className="space-y-3">
+                          {ngoPeopleServed.map((p) => (
+                            <div key={p.city}>
+                              <div className="flex justify-between text-xs">
+                                <span className="text-slate-300">{p.city}</span>
+                                <span className="text-slate-500">{p.people.toLocaleString()} people · {p.shelters} shelters</span>
+                              </div>
+                              <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-white/5">
+                                <motion.div
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${(p.people / 42000) * 100}%` }}
+                                  transition={{ duration: 0.8, ease: 'easeOut' }}
+                                  className="h-full rounded-full"
+                                  style={{ background: p.color }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <h4 className="mb-3 text-sm font-semibold text-white">Partner Shelters & Beneficiaries</h4>
+                        <div className="space-y-2">
+                          {ngoShelterList.map((s, i) => (
+                            <motion.div
+                              key={i}
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: i * 0.04 }}
+                              className="flex items-center gap-3 rounded-lg glass-soft px-4 py-2.5"
+                            >
+                              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-green-500/15">
+                                <Users className="h-3.5 w-3.5 text-green-400" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-xs font-semibold text-white">{s.name}</div>
+                                <div className="text-[10px] text-slate-500">{s.city} · {s.people.toLocaleString()} people · {s.meals.toLocaleString()} meals served</div>
+                              </div>
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${
+                                s.status === 'Active' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' : 'bg-rose-500/15 text-rose-300 ring-rose-500/30'
+                              }`}>{s.status}</span>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active Volunteers */}
+                  {modalType === 'volunteers' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-teal-400">48</div>
+                          <div className="text-[10px] uppercase text-slate-500">Total Active</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-sky-400">24</div>
+                          <div className="text-[10px] uppercase text-slate-500">On Delivery</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-emerald-400">4.8</div>
+                          <div className="text-[10px] uppercase text-slate-500">Avg Rating</div>
+                        </div>
+                      </div>
+                      {ngoActiveVolunteers.map((v, i) => (
+                        <motion.div
+                          key={i}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.04 }}
+                          className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3"
+                        >
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-green-600 text-xs font-bold text-white">
+                            {v.avatar}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold text-white">{v.name}</div>
+                            <div className="flex gap-3 text-xs text-slate-400">
+                              <span>{v.city}</span><span>· {v.deliveries} deliveries</span><span>· ★ {v.rating}</span>
+                            </div>
+                          </div>
+                          <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
+                            v.status === 'On Delivery' ? 'bg-amber-500/15 text-amber-300 ring-amber-500/30' : 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30'
+                          }`}>{v.status}</span>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
     </div>
   );
 }
 
 /* ---------------- Volunteer Dashboard ---------------- */
-function VolunteerDashboard() {
+const volunteerDeliveryHistory = [
+  { id: 'DLV-2041', from: 'Haldiram', to: 'Robin Hood Army', meals: 85, distance: '3.2 km', status: 'Completed', date: '04 Sep', time: '14 min', rating: 5 },
+  { id: 'DLV-2040', from: "Domino's", to: 'Feeding India', meals: 140, distance: '5.1 km', status: 'In Transit', date: '04 Sep', time: '22 min', rating: 0 },
+  { id: 'DLV-2039', from: 'Theobroma', to: 'Delhi Food Bank', meals: 60, distance: '2.4 km', status: 'Completed', date: '03 Sep', time: '11 min', rating: 5 },
+  { id: 'DLV-2038', from: 'Bikanervala', to: 'Goonj', meals: 95, distance: '4.8 km', status: 'Completed', date: '03 Sep', time: '19 min', rating: 4 },
+  { id: 'DLV-2037', from: 'Saravana Bhavan', to: 'Akshaya Patra', meals: 180, distance: '6.2 km', status: 'Completed', date: '02 Sep', time: '28 min', rating: 5 },
+  { id: 'DLV-2036', from: 'Mainland China', to: 'No Food Waste', meals: 75, distance: '3.9 km', status: 'Completed', date: '02 Sep', time: '16 min', rating: 5 },
+  { id: 'DLV-2035', from: 'Paradise Biryani', to: 'Feeding India', meals: 120, distance: '4.5 km', status: 'Completed', date: '01 Sep', time: '21 min', rating: 4 },
+  { id: 'DLV-2034', from: "McDonald's", to: 'Robin Hood Army', meals: 50, distance: '2.1 km', status: 'Completed', date: '01 Sep', time: '9 min', rating: 5 },
+];
+
+const volunteerMealBreakdown = [
+  { category: 'Rice & Biryani', meals: 12400, color: '#22C55E' },
+  { category: 'Vegetables', meals: 9800, color: '#84CC16' },
+  { category: 'Snacks & Packed', meals: 7600, color: '#10B981' },
+  { category: 'Bakery', meals: 4200, color: '#a3e635' },
+  { category: 'Sweets', meals: 2400, color: '#65a30d' },
+  { category: 'Other', meals: 1800, color: '#16A34A' },
+];
+
+const volunteerRewardHistory = [
+  { date: '04 Sep', action: 'Delivery DLV-2041 completed', points: +50, type: 'delivery' },
+  { date: '04 Sep', action: 'Speed bonus (under 15 min)', points: +25, type: 'bonus' },
+  { date: '03 Sep', action: 'Delivery DLV-2039 completed', points: +50, type: 'delivery' },
+  { date: '03 Sep', action: '5-star rating streak (x3)', points: +100, type: 'streak' },
+  { date: '03 Sep', action: 'Delivery DLV-2038 completed', points: +50, type: 'delivery' },
+  { date: '02 Sep', action: 'Weekend warrior bonus', points: +200, type: 'bonus' },
+  { date: '02 Sep', action: 'Delivery DLV-2036 completed', points: +50, type: 'delivery' },
+  { date: '01 Sep', action: 'Badge unlocked: 1K Meals', points: +500, type: 'badge' },
+  { date: '01 Sep', action: 'Delivery DLV-2034 completed', points: +50, type: 'delivery' },
+  { date: '31 Aug', action: 'Monthly top volunteer bonus', points: +1000, type: 'bonus' },
+];
+
+const volunteerAllBadges = [
+  { name: 'First Drop', icon: '🌱', earned: true, date: '15 Jun 2025', desc: 'Complete your first delivery' },
+  { name: '100 Meals', icon: '🍽️', earned: true, date: '02 Jul 2025', desc: 'Deliver 100 meals total' },
+  { name: 'Night Owl', icon: '🌙', earned: true, date: '18 Jul 2025', desc: 'Complete a delivery after 10 PM' },
+  { name: 'Speed King', icon: '⚡', earned: true, date: '05 Aug 2025', desc: 'Complete a delivery in under 10 minutes' },
+  { name: '1K Meals', icon: '🏆', earned: true, date: '01 Sep 2025', desc: 'Deliver 1,000 meals total' },
+  { name: 'Marathon', icon: '🔥', earned: false, date: '', desc: 'Complete 50 deliveries in a single week' },
+  { name: 'Eco Hero', icon: '♻️', earned: true, date: '20 Aug 2025', desc: 'Save 500 kg of CO₂ through deliveries' },
+  { name: '5-Star Streak', icon: '⭐', earned: true, date: '28 Aug 2025', desc: 'Get 5-star ratings on 10 consecutive deliveries' },
+  { name: 'City Saver', icon: '🌆', earned: true, date: '22 Aug 2025', desc: 'Deliver across 5 different cities' },
+  { name: 'Weekend Warrior', icon: '💪', earned: true, date: '30 Aug 2025', desc: 'Complete 10 deliveries on a single weekend' },
+  { name: 'Early Bird', icon: '🐦', earned: true, date: '12 Aug 2025', desc: 'Complete a delivery before 7 AM' },
+  { name: 'Team Player', icon: '🤝', earned: true, date: '25 Aug 2025', desc: 'Collaborate with 5 different NGOs' },
+  { name: 'Reliable', icon: '📋', earned: true, date: '15 Aug 2025', desc: 'Maintain 95% on-time rate for 30 days' },
+  { name: 'Impact Maker', icon: '💎', earned: true, date: '01 Sep 2025', desc: 'Serve 10,000 meals to people in need' },
+  { name: 'Legend', icon: '👑', earned: false, date: '', desc: 'Reach 5,000 lifetime deliveries' },
+];
+
+type VolunteerModalType = 'deliveries' | 'meals' | 'rewards' | 'badges' | null;
+
+function VolunteerDashboard({ onDeliveryClick }: { onDeliveryClick: (id: string) => void }) {
+  const [modalType, setModalType] = useState<VolunteerModalType>(null);
+
+  const closeModal = () => setModalType(null);
+
+  const modalConfig: Record<NonNullable<VolunteerModalType>, { title: string; icon: any; color: string }> = {
+    deliveries: { title: 'Delivery History', icon: Package, color: 'from-emerald-500 to-green-600' },
+    meals: { title: 'Meals Delivered Breakdown', icon: Users, color: 'from-lime-500 to-emerald-600' },
+    rewards: { title: 'Reward Points History', icon: Zap, color: 'from-amber-500 to-yellow-600' },
+    badges: { title: 'All Badges', icon: Award, color: 'from-green-500 to-teal-600' },
+  };
+
   return (
     <div className="space-y-6">
       <h3 className="font-display text-lg font-bold text-white">Volunteer Overview</h3>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={Package} label="Deliveries Made" value={1240} suffix="" trend="24%" color="from-emerald-500 to-green-600" />
-        <StatCard icon={Users} label="Meals Delivered" value={38200} suffix="+" trend="19%" color="from-lime-500 to-emerald-600" />
-        <StatCard icon={Zap} label="Reward Points" value={12480} suffix="" trend="32%" color="from-amber-500 to-yellow-600" />
-        <StatCard icon={Award} label="Badges Earned" value={14} suffix="" color="from-green-500 to-teal-600" />
+        <StatCard icon={Package} label="Deliveries Made" value={1240} suffix="" trend="24%" color="from-emerald-500 to-green-600" onClick={() => setModalType('deliveries')} />
+        <StatCard icon={Users} label="Meals Delivered" value={38200} suffix="+" trend="19%" color="from-lime-500 to-emerald-600" onClick={() => setModalType('meals')} />
+        <StatCard icon={Zap} label="Reward Points" value={12480} suffix="" trend="32%" color="from-amber-500 to-yellow-600" onClick={() => setModalType('rewards')} />
+        <StatCard icon={Award} label="Badges Earned" value={14} suffix="" color="from-green-500 to-teal-600" onClick={() => setModalType('badges')} />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -354,7 +756,7 @@ function VolunteerDashboard() {
             <h3 className="font-display text-base font-bold text-white">Active Deliveries</h3>
             <div className="mt-4 space-y-3">
               {volunteerDeliveries.map((d) => (
-                <div key={d.id} className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3.5">
+                <div key={d.id} className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3.5 transition-colors hover:bg-white/5">
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                     <Navigation className="h-5 w-5 text-primary" />
                   </div>
@@ -367,6 +769,12 @@ function VolunteerDashboard() {
                   <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
                     d.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' : 'bg-sky-500/15 text-sky-300 ring-sky-500/30'
                   }`}>{d.status}</span>
+                  <button
+                    onClick={() => onDeliveryClick(d.id)}
+                    className="rounded-lg bg-white/5 px-3 py-1.5 text-xs font-semibold text-primary transition-all hover:bg-primary/15 hover:shadow-glow"
+                  >
+                    {d.status === 'Completed' ? 'View' : 'Navigate'}
+                  </button>
                 </div>
               ))}
             </div>
@@ -377,15 +785,8 @@ function VolunteerDashboard() {
           <div className="h-full rounded-2xl glass p-6">
             <h3 className="font-display text-base font-bold text-white">Your Badges</h3>
             <div className="mt-4 grid grid-cols-3 gap-3">
-              {[
-                { name: 'First Drop', icon: '🌱', earned: true },
-                { name: '100 Meals', icon: '🍽️', earned: true },
-                { name: 'Night Owl', icon: '🌙', earned: true },
-                { name: 'Speed King', icon: '⚡', earned: true },
-                { name: '1K Meals', icon: '🏆', earned: true },
-                { name: 'Marathon', icon: '🔥', earned: false },
-              ].map((b) => (
-                <div key={b.name} className={`flex flex-col items-center rounded-xl p-3 text-center ${b.earned ? 'glass-soft' : 'opacity-30 grayscale'}`}>
+              {volunteerAllBadges.slice(0, 6).map((b) => (
+                <div key={b.name} className={`flex flex-col items-center rounded-xl p-3 text-center transition-transform hover:scale-105 ${b.earned ? 'glass-soft' : 'opacity-30 grayscale'}`}>
                   <span className="text-2xl">{b.icon}</span>
                   <span className="mt-1 text-[10px] font-medium text-slate-300">{b.name}</span>
                 </div>
@@ -394,6 +795,235 @@ function VolunteerDashboard() {
           </div>
         </Reveal>
       </div>
+
+      {/* Volunteer stat card detail modal */}
+      <AnimatePresence>
+        {modalType && (() => {
+          const cfg = modalConfig[modalType];
+          const ModalIcon = cfg.icon;
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+              onClick={closeModal}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-3xl glass shadow-card"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal header */}
+                <div className="flex items-center justify-between border-b border-white/5 px-6 py-5">
+                  <div className="flex items-center gap-3">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${cfg.color} shadow-glow`}>
+                      <ModalIcon className="h-5 w-5 text-white" />
+                    </div>
+                    <h3 className="font-display text-lg font-bold text-white">{cfg.title}</h3>
+                  </div>
+                  <button onClick={closeModal} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                {/* Modal body */}
+                <div className="max-h-[65vh] overflow-y-auto px-6 py-5">
+                  {/* Deliveries Made */}
+                  {modalType === 'deliveries' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-emerald-400">1,240</div>
+                          <div className="text-[10px] uppercase text-slate-500">Total</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-sky-400">1,198</div>
+                          <div className="text-[10px] uppercase text-slate-500">Completed</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-amber-400">96.6%</div>
+                          <div className="text-[10px] uppercase text-slate-500">Success Rate</div>
+                        </div>
+                      </div>
+                      {volunteerDeliveryHistory.map((d, i) => (
+                        <motion.div
+                          key={d.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.04 }}
+                          className="flex items-center gap-4 rounded-xl glass-soft px-4 py-3"
+                        >
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
+                            <Navigation className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold text-white">{d.from} → {d.to}</div>
+                            <div className="flex gap-3 text-xs text-slate-400">
+                              <span>{d.meals} meals</span><span>· {d.distance}</span><span>· {d.time}</span><span>· {d.date}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {d.rating > 0 && (
+                              <span className="text-xs text-amber-400">{'★'.repeat(d.rating)}</span>
+                            )}
+                            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
+                              d.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30' : 'bg-sky-500/15 text-sky-300 ring-sky-500/30'
+                            }`}>{d.status}</span>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Meals Delivered */}
+                  {modalType === 'meals' && (
+                    <div className="space-y-5">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl glass-soft p-4 text-center">
+                          <div className="font-display text-2xl font-bold text-lime-400">38,200</div>
+                          <div className="text-xs text-slate-500">Total Meals Delivered</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-4 text-center">
+                          <div className="font-display text-2xl font-bold text-emerald-400">8,404</div>
+                          <div className="text-xs text-slate-500">kg CO₂ Saved</div>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl glass p-5">
+                        <h4 className="mb-4 text-sm font-semibold text-white">Meals by Food Category</h4>
+                        <div className="space-y-3">
+                          {volunteerMealBreakdown.map((m) => (
+                            <div key={m.category}>
+                              <div className="flex justify-between text-xs">
+                                <span className="text-slate-300">{m.category}</span>
+                                <span className="text-slate-500">{m.meals.toLocaleString()} meals</span>
+                              </div>
+                              <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-white/5">
+                                <motion.div
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${(m.meals / 12400) * 100}%` }}
+                                  transition={{ duration: 0.8, ease: 'easeOut' }}
+                                  className="h-full rounded-full"
+                                  style={{ background: m.color }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-lg font-bold text-white">3.2k</div>
+                          <div className="text-[10px] uppercase text-slate-500">Avg / Month</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-lg font-bold text-white">127</div>
+                          <div className="text-[10px] uppercase text-slate-500">Avg / Day</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-lg font-bold text-white">31</div>
+                          <div className="text-[10px] uppercase text-slate-500">Best Day</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Reward Points */}
+                  {modalType === 'rewards' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-amber-400">12,480</div>
+                          <div className="text-[10px] uppercase text-slate-500">Current Points</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-emerald-400">+2,150</div>
+                          <div className="text-[10px] uppercase text-slate-500">This Month</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-sky-400">Gold</div>
+                          <div className="text-[10px] uppercase text-slate-500">Tier</div>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        {volunteerRewardHistory.map((r, i) => (
+                          <motion.div
+                            key={i}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.03 }}
+                            className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-white/5"
+                          >
+                            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+                              r.type === 'badge' ? 'bg-amber-500/15' :
+                              r.type === 'bonus' ? 'bg-violet-500/15' :
+                              r.type === 'streak' ? 'bg-sky-500/15' :
+                              'bg-emerald-500/15'
+                            }`}>
+                              {r.type === 'badge' ? <Award className="h-3.5 w-3.5 text-amber-400" /> :
+                               r.type === 'bonus' ? <Zap className="h-3.5 w-3.5 text-violet-400" /> :
+                               r.type === 'streak' ? <Trophy className="h-3.5 w-3.5 text-sky-400" /> :
+                               <Package className="h-3.5 w-3.5 text-emerald-400" />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-medium text-white">{r.action}</div>
+                              <div className="text-[10px] text-slate-500">{r.date}</div>
+                            </div>
+                            <span className={`font-display text-sm font-bold ${r.points > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {r.points > 0 ? '+' : ''}{r.points.toLocaleString()}
+                            </span>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Badges */}
+                  {modalType === 'badges' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-teal-400">14</div>
+                          <div className="text-[10px] uppercase text-slate-500">Earned</div>
+                        </div>
+                        <div className="rounded-xl glass-soft p-3 text-center">
+                          <div className="font-display text-xl font-bold text-slate-400">2</div>
+                          <div className="text-[10px] uppercase text-slate-500">Locked</div>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        {volunteerAllBadges.map((b, i) => (
+                          <motion.div
+                            key={b.name}
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: i * 0.03 }}
+                            className={`rounded-xl p-3 text-center transition-transform hover:scale-105 ${b.earned ? 'glass-soft' : 'opacity-30'}`}
+                          >
+                            <span className="text-3xl">{b.icon}</span>
+                            <div className="mt-1.5 text-xs font-semibold text-white">{b.name}</div>
+                            <div className="mt-0.5 text-[10px] text-slate-500">{b.desc}</div>
+                            {b.earned ? (
+                              <div className="mt-1.5 flex items-center justify-center gap-1 text-[10px] text-emerald-400">
+                                <CheckCircle2 className="h-2.5 w-2.5" /> {b.date}
+                              </div>
+                            ) : (
+                              <div className="mt-1.5 text-[10px] text-slate-600">Locked</div>
+                            )}
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
     </div>
   );
 }
@@ -437,7 +1067,7 @@ interface ProfileRow {
   donation_count?: number;
 }
 
-function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemove: (d: Donation, reason: string) => void }) {
+function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemove: (d: Donation, reason: string) => void; isDemo: boolean; onToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
   const [selected, setSelected] = useState<Donation | null>(null);
   const [filter, setFilter] = useState<'all' | 'available' | 'claimed' | 'picked' | 'delivered' | 'removed'>('all');
   const [confirmRemove, setConfirmRemove] = useState<Donation | null>(null);
@@ -456,6 +1086,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
     const loadStats = async () => {
       const { data, error } = await supabase.rpc('admin_get_dashboard_stats');
       if (mounted && !error && data) setStats(data as AdminStats);
+      else if (mounted) setStats(demoAdminStats);
     };
     loadStats();
     return () => { mounted = false; };
@@ -474,7 +1105,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
           .or('status.eq.removed, freshness_score.lt.70')
           .order('created_at', { ascending: false })
           .limit(20);
-        if (mounted && data) {
+        if (mounted && data && data.length > 0) {
           setProfileRows(data.map((d: any) => ({
             id: d.id,
             full_name: d.restaurant_name,
@@ -485,6 +1116,8 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
             created_at: d.created_at,
             donation_count: d.freshness_score,
           })));
+        } else if (mounted) {
+          setProfileRows(demoFraudFlags as unknown as ProfileRow[]);
         }
       } else {
         const roleFilter = detailModal === 'restaurants' ? 'restaurant' : detailModal === 'ngos' ? 'ngo' : 'volunteer';
@@ -493,7 +1126,7 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
           .select('id, full_name, role, organization, city, phone, created_at')
           .eq('role', roleFilter)
           .order('created_at', { ascending: false });
-        if (mounted && !error && data) {
+        if (mounted && !error && data && data.length > 0) {
           if (detailModal === 'restaurants') {
             const withCounts = await Promise.all((data as ProfileRow[]).map(async (p) => {
               const { count } = await supabase
@@ -507,7 +1140,10 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
             setProfileRows(data as ProfileRow[]);
           }
         } else if (mounted) {
-          setProfileRows([]);
+          // Fallback to demo data
+          if (detailModal === 'restaurants') setProfileRows(demoRestaurants as unknown as ProfileRow[]);
+          else if (detailModal === 'ngos') setProfileRows(demoNGOs as unknown as ProfileRow[]);
+          else if (detailModal === 'volunteers') setProfileRows(demoVolunteers as unknown as ProfileRow[]);
         }
       }
       if (mounted) setDetailLoading(false);
@@ -581,10 +1217,10 @@ function AdminDashboard({ donations, onRemove }: { donations: Donation[]; onRemo
     <div className="space-y-6">
       <h3 className="font-display text-lg font-bold text-white">Admin Overview</h3>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={Store} label="Total Restaurants" value={stats?.restaurants ?? 0} suffix="" color="from-emerald-500 to-green-600" onClick={() => { setDetailModal('restaurants'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={HeartHandshake} label="Active NGOs" value={stats?.ngos ?? 0} suffix="" color="from-lime-500 to-emerald-600" onClick={() => { setDetailModal('ngos'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={Bike} label="Volunteers" value={stats?.volunteers ?? 0} suffix="" color="from-green-500 to-teal-600" onClick={() => { setDetailModal('volunteers'); setDetailSearch(''); setDetailCityFilter('all'); }} />
-        <StatCard icon={AlertTriangle} label="Fraud Flags" value={fraudFlags.length} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={Store} label="Total Restaurants" value={stats?.restaurants ?? demoAdminStats.restaurants} suffix="" color="from-emerald-500 to-green-600" onClick={() => { setDetailModal('restaurants'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={HeartHandshake} label="Active NGOs" value={stats?.ngos ?? demoAdminStats.ngos} suffix="" color="from-lime-500 to-emerald-600" onClick={() => { setDetailModal('ngos'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={Bike} label="Volunteers" value={stats?.volunteers ?? demoAdminStats.volunteers} suffix="" color="from-green-500 to-teal-600" onClick={() => { setDetailModal('volunteers'); setDetailSearch(''); setDetailCityFilter('all'); }} />
+        <StatCard icon={AlertTriangle} label="Fraud Flags" value={fraudFlags.length || 3} suffix="" color="from-rose-500 to-red-600" onClick={() => { setDetailModal('fraud'); setDetailSearch(''); setDetailCityFilter('all'); }} />
       </div>
 
       {/* Donation Management Table */}
@@ -1205,6 +1841,8 @@ export default function DashboardPage() {
   const [role, setRole] = useState<'restaurant' | 'ngo' | 'volunteer' | 'admin'>(user?.role === 'admin' ? 'admin' : (user?.role || 'restaurant'));
   const [donations, setDonations] = useState<Donation[]>([]);
   const [donateOpen, setDonateOpen] = useState(false);
+  const { toasts, push: pushToast } = useToasts();
+  const isDemoMode = useRef(false);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -1222,15 +1860,21 @@ export default function DashboardPage() {
       if (role === 'restaurant') {
         const { data, error } = await supabase.from('donations').select('*').eq('restaurant_id', user.id).order('created_at', { ascending: false });
         if (error) console.error('Failed to load donations:', error.message);
-        if (data) setDonations(data as Donation[]);
+        const realData = (data as Donation[]) || [];
+        if (realData.length === 0) { isDemoMode.current = true; setDonations(demoDonations.slice(0, 5)); }
+        else { isDemoMode.current = false; setDonations(realData); }
       } else if (role === 'ngo') {
         const { data: d, error } = await supabase.from('donations').select('*').eq('status', 'available').order('created_at', { ascending: false });
         if (error) console.error('Failed to load available donations:', error.message);
-        if (d) setDonations(d as Donation[]);
+        const realData = (d as Donation[]) || [];
+        if (realData.length === 0) { isDemoMode.current = true; setDonations(demoDonations); }
+        else { isDemoMode.current = false; setDonations(realData); }
       } else if (role === 'admin') {
         const { data: d, error } = await supabase.from('donations').select('*').order('created_at', { ascending: false }).limit(50);
         if (error) console.error('Failed to load all donations:', error.message);
-        if (d) setDonations(d as Donation[]);
+        const realData = (d as Donation[]) || [];
+        if (realData.length === 0) { isDemoMode.current = true; setDonations(demoDonations); }
+        else { isDemoMode.current = false; setDonations(realData); }
       }
     } catch (err) {
       console.error('Dashboard data load error:', err);
@@ -1280,6 +1924,11 @@ export default function DashboardPage() {
 
   const handleClaim = async (donationId: string) => {
     if (!user) return;
+    if (isDemoMode.current) {
+      setDonations((prev) => prev.map((d) => d.id === donationId ? { ...d, status: 'claimed' as const } : d));
+      pushToast('Donation claimed successfully (demo mode)', 'success');
+      return;
+    }
     const { error: claimError } = await supabase.from('claims').insert({
       donation_id: donationId,
       ngo_id: user.id,
@@ -1288,16 +1937,25 @@ export default function DashboardPage() {
     });
     if (claimError) {
       console.error('Claim failed:', claimError.message);
+      pushToast('Claim failed: ' + claimError.message, 'error');
       return;
     }
     const { error: updateError } = await supabase.from('donations').update({ status: 'claimed' }).eq('id', donationId);
     if (updateError) {
       console.error('Donation status update failed:', updateError.message);
+      pushToast('Status update failed: ' + updateError.message, 'error');
+      return;
     }
+    pushToast('Donation claimed successfully', 'success');
     loadData();
   };
 
   const handleRemove = async (donation: Donation, reason: string) => {
+    if (isDemoMode.current) {
+      setDonations((prev) => prev.map((d) => d.id === donation.id ? { ...d, status: 'removed' as const } : d));
+      pushToast(`Donation removed: ${donation.food_item} (demo mode)`, 'success');
+      return;
+    }
     const { error } = await supabase.rpc('admin_remove_donation', {
       p_donation_id: donation.id,
       p_reason: reason,
@@ -1306,19 +1964,37 @@ export default function DashboardPage() {
       console.error('Remove failed:', error.message);
       throw error;
     }
+    pushToast(`Donation removed: ${donation.food_item}`, 'success');
     loadData();
   };
 
   const handleAdvance = async (donationId: string, newStatus: 'picked' | 'delivered') => {
+    if (isDemoMode.current) {
+      setDonations((prev) => prev.map((d) => d.id === donationId ? { ...d, status: newStatus } : d));
+      pushToast(`Donation marked as ${newStatus} (demo mode)`, 'success');
+      return;
+    }
     const { error } = await supabase.rpc('advance_donation_status', {
       p_donation_id: donationId,
       p_new_status: newStatus,
     });
     if (error) {
       console.error('Status advance failed:', error.message);
+      pushToast('Status update failed: ' + error.message, 'error');
       return;
     }
+    pushToast(`Donation marked as ${newStatus}`, 'success');
     loadData();
+  };
+
+  const handleExportCSV = () => {
+    const data = donations.length ? donations : restaurantDonations;
+    exportCSV(data, 'my-donations.csv');
+    pushToast('CSV exported successfully', 'success');
+  };
+
+  const handleDeliveryClick = (id: string) => {
+    pushToast(`Delivery ${id} details opened (demo mode)`, 'info');
   };
 
   if (authLoading) {
@@ -1376,10 +2052,10 @@ export default function DashboardPage() {
               exit={{ opacity: 0, y: -20 }}
               transition={{ duration: 0.4 }}
             >
-              {role === 'restaurant' && <RestaurantDashboard donations={donations} onDonate={() => setDonateOpen(true)} />}
+              {role === 'restaurant' && <RestaurantDashboard donations={donations} onDonate={() => setDonateOpen(true)} onExport={handleExportCSV} />}
               {role === 'ngo' && <NGODashboard donations={donations} onClaim={handleClaim} onAdvance={handleAdvance} />}
-              {role === 'volunteer' && <VolunteerDashboard />}
-              {role === 'admin' && <AdminDashboard donations={donations} onRemove={handleRemove} />}
+              {role === 'volunteer' && <VolunteerDashboard onDeliveryClick={handleDeliveryClick} />}
+              {role === 'admin' && <AdminDashboard donations={donations} onRemove={handleRemove} isDemo={isDemoMode.current} onToast={pushToast} />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -1390,6 +2066,7 @@ export default function DashboardPage() {
       </div>
 
       <DonateFoodModal open={donateOpen} onClose={() => { setDonateOpen(false); loadData(); }} />
+      <ToastContainer toasts={toasts} />
     </section>
   );
 }

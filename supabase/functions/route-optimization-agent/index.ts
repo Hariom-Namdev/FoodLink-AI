@@ -45,7 +45,6 @@ Deno.serve(async (req: Request) => {
         donation:donations ( id, food_item, restaurant_name, city, lat, lng, meals, expiry_hours ),
         ngo:ngos ( id, name, city, lat, lng )
       `)
-      .is('completed_at', null)
       .order('created_at', 'desc')
       .limit(30);
 
@@ -77,6 +76,29 @@ Deno.serve(async (req: Request) => {
       const city = c.donation.city || 'Unknown';
       if (!cityGroups[city]) cityGroups[city] = [];
       cityGroups[city].push(c);
+    }
+
+    // If no valid claims with both donation and NGO, save a no-op output
+    if (Object.keys(cityGroups).length === 0) {
+      const { error: rpcErr } = await supabase.rpc('save_agent_output', {
+        p_agent_type: 'route_optimization',
+        p_severity: 'info',
+        p_title: 'No active deliveries to optimize',
+        p_summary: 'There are currently no claimed donations with valid pickup and delivery locations. Route optimization will run when deliveries are active.',
+        p_output: { active_deliveries: 0, reason: 'no_valid_claims' },
+      });
+      if (rpcErr) console.error('save_agent_output error:', rpcErr);
+
+      return new Response(JSON.stringify({
+        success: true,
+        agent: 'route_optimization',
+        routes: [],
+        total_deliveries: 0,
+        total_distance_km: 0,
+        message: 'No active deliveries with valid locations',
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const routes: any[] = [];
@@ -158,7 +180,7 @@ Deno.serve(async (req: Request) => {
         deliveries: cityClaims.length,
       });
 
-      await supabase.rpc('save_agent_output', {
+      const { error: rpcErr } = await supabase.rpc('save_agent_output', {
         p_agent_type: 'route_optimization',
         p_severity: 'info',
         p_title: `Optimized route for ${city}: ${cityClaims.length} deliveries, ${Math.round(routeDistance * 10) / 10} km`,
@@ -171,6 +193,7 @@ Deno.serve(async (req: Request) => {
           deliveries: cityClaims.length,
         },
       });
+      if (rpcErr) console.error('save_agent_output error:', rpcErr);
     }
 
     return new Response(JSON.stringify({
@@ -183,7 +206,7 @@ Deno.serve(async (req: Request) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : (typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err));
     return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
