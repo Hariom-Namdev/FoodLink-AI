@@ -22,6 +22,7 @@ import {
 import DonateFoodModal from '../components/DonateFoodModal';
 import { AgentActivityFeed } from '../components/Dashboard';
 import { AIAgentsPanel } from '../components/AIAgentsPanel';
+import { triggerAnalysisAgents } from '../lib/triggerAgents';
 
 // Toast notification for demo-mode feedback
 interface Toast { id: number; msg: string; type: 'success' | 'info' | 'error'; }
@@ -1914,6 +1915,7 @@ export default function DashboardPage() {
           },
           body: JSON.stringify({}),
         });
+        triggerAnalysisAgents();
       } catch {
         // Silent — agent will run on next cycle
       }
@@ -1947,6 +1949,7 @@ export default function DashboardPage() {
       return;
     }
     pushToast('Donation claimed successfully', 'success');
+    triggerAnalysisAgents();
     loadData();
   };
 

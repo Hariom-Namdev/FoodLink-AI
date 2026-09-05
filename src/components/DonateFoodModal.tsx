@@ -4,6 +4,7 @@ import { X, Utensils, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { foodCategories, cities } from '../data/content';
+import { triggerAnalysisAgents } from '../lib/triggerAgents';
 
 export default function DonateFoodModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useAuth();
@@ -75,6 +76,9 @@ export default function DonateFoodModal({ open, onClose }: { open: boolean; onCl
       } catch {
         // Agent will pick up the task on its next poll cycle regardless
       }
+
+      // Trigger the 4 analysis agents (expiry, route, fraud, impact)
+      triggerAnalysisAgents();
 
       setSuccess(true);
       setTimeout(() => {
