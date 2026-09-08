@@ -18,6 +18,16 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
+  Mumbai: { lat: 19.076, lng: 72.8777 },
+  Pune: { lat: 18.5204, lng: 73.8567 },
+  Delhi: { lat: 28.6139, lng: 77.209 },
+  Bengaluru: { lat: 12.9716, lng: 77.5946 },
+  Chennai: { lat: 13.0827, lng: 80.2707 },
+  Hyderabad: { lat: 17.385, lng: 78.4867 },
+  Kolkata: { lat: 22.5726, lng: 88.3639 },
+};
+
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -41,7 +51,8 @@ Deno.serve(async (req: Request) => {
       .select(`
         id, donation_id, ngo_id, status, created_at,
         donation:donations ( id, food_item, restaurant_name, city, lat, lng, meals, expiry_hours, status ),
-        ngo:ngos ( id, name, city, lat, lng )
+        ngo:ngos ( id, name, city, lat, lng ),
+        profile:profiles ( id, full_name, organization, city )
       `)
       .order('created_at', { ascending: false })
       .limit(30);
@@ -73,7 +84,18 @@ Deno.serve(async (req: Request) => {
     // Group by city
     const cityGroups: Record<string, any[]> = {};
     for (const c of claims as any[]) {
-      if (!c.donation || !c.ngo) continue;
+      if (!c.donation) continue;
+      if (!c.ngo && c.profile) {
+        const profileCoords = CITY_COORDS[c.profile.city] || null;
+        c.ngo = {
+          id: c.profile.id,
+          name: c.profile.organization || c.profile.full_name || 'Claiming NGO',
+          city: c.profile.city || c.donation.city || 'Unknown',
+          lat: profileCoords?.lat ?? null,
+          lng: profileCoords?.lng ?? null,
+        };
+      }
+      if (!c.ngo) continue;
       const city = c.donation.city || 'Unknown';
       if (!cityGroups[city]) cityGroups[city] = [];
       cityGroups[city].push(c);
