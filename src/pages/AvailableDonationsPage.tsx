@@ -8,7 +8,7 @@ import {
 import { useAuth } from '../lib/auth';
 import { supabase, type Donation } from '../lib/supabase';
 import { Reveal, SectionHeading } from '../components/ui';
-import { triggerAnalysisAgents } from '../lib/triggerAgents';
+import { triggerAllAgents } from '../lib/triggerAgents';
 
 const STATUS_STYLES: Record<string, string> = {
   available: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
@@ -129,7 +129,6 @@ export default function AvailableDonationsPage() {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
           body: JSON.stringify({}),
         });
-        triggerAnalysisAgents();
       } catch { /* silent */ }
     }, 15000);
     return () => clearInterval(interval);
@@ -148,7 +147,7 @@ export default function AvailableDonationsPage() {
       const { error } = await supabase.rpc('claim_donation_as_ngo', { p_donation_id: donationId });
       if (error) throw error;
       showToast({ type: 'success', msg: 'Donation claimed successfully! The donor has been notified.' });
-      triggerAnalysisAgents();
+      triggerAllAgents(donationId);
       loadAvailable();
       loadMyClaims();
     } catch (err: any) {
@@ -174,6 +173,7 @@ export default function AvailableDonationsPage() {
           ? 'Donation marked as picked up! The donor has been notified.'
           : 'Donation marked as delivered! Both parties have been notified.',
       });
+      triggerAllAgents(donationId);
       loadAvailable();
       loadMyClaims();
     } catch (err: any) {

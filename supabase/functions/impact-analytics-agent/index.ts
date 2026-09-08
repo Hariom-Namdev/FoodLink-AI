@@ -1,10 +1,6 @@
 // Impact Analytics Agent
-// Computes platform-wide impact metrics: total meals rescued, waste prevented,
-// CO2 savings, people fed, city-wise breakdown, and trends. Writes a
-// comprehensive analytics report to agent_outputs.
-//
-// Real-world responsibility: measure and report the real-world impact of
-// the food redistribution platform for stakeholders and optimization.
+// Computes platform-wide impact metrics. Accepts optional donation_id
+// to compute impact for a specific donation. Writes results to agent_outputs.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -17,7 +13,6 @@ const corsHeaders = {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
@@ -28,58 +23,40 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // Fetch all donations for analytics
+    const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+    const donationId = body.donation_id || null;
+
     const { data: allDonations, error: dErr } = await supabase
       .from('donations')
-      .select('id, food_item, category, quantity, meals, status, city, created_at, freshness_score')
-      .order('created_at', 'desc')
+      .select('id, food_item, category, quantity, meals, status, city, created_at, freshness_score, restaurant_name')
+      .order('created_at', { ascending: false })
       .limit(500);
-
     if (dErr) throw dErr;
 
-    // Fetch all claims
     const { data: claims, error: cErr } = await supabase
       .from('claims')
       .select('id, donation_id, status, created_at')
-      .order('created_at', 'desc')
+      .order('created_at', { ascending: false })
       .limit(500);
-
     if (cErr) throw cErr;
 
-    // Fetch NGO count
     const { count: ngoCount } = await supabase
       .from('ngos')
       .select('*', { count: 'exact', head: true })
       .eq('verified', true);
 
     const donations = allDonations || [];
-    const completedClaims = (claims || []).filter((c: any) => c.status === 'delivered' || c.status === 'completed');
-
-    // Core metrics
     const totalDonations = donations.length;
     const totalMealsListed = donations.reduce((s, d) => s + (d.meals || 0), 0);
-    const totalMealsDelivered = donations
-      .filter(d => d.status === 'delivered')
-      .reduce((s, d) => s + (d.meals || 0), 0);
-    const totalMealsClaimed = donations
-      .filter(d => d.status === 'claimed' || d.status === 'picked' || d.status === 'delivered')
-      .reduce((s, d) => s + (d.meals || 0), 0);
+    const totalMealsDelivered = donations.filter(d => d.status === 'delivered').reduce((s, d) => s + (d.meals || 0), 0);
+    const totalMealsClaimed = donations.filter(d => ['claimed', 'picked', 'delivered'].includes(d.status)).reduce((s, d) => s + (d.meals || 0), 0);
 
-    // Waste prevented: ~0.4 kg per meal (avg Indian meal weight)
     const wastePreventedKg = Math.round(totalMealsDelivered * 0.4);
-
-    // CO2 savings: ~2.5 kg CO2 per kg food waste avoided
     const co2SavedKg = Math.round(wastePreventedKg * 2.5);
-
-    // People fed (assuming 1 meal = 1 person fed)
     const peopleFed = totalMealsDelivered;
+    const successRate = totalDonations > 0 ? Math.round((donations.filter(d => d.status === 'delivered').length / totalDonations) * 100) : 0;
 
-    // Success rate
-    const successRate = totalDonations > 0
-      ? Math.round((donations.filter(d => d.status === 'delivered').length / totalDonations) * 100)
-      : 0;
-
-    // City-wise breakdown
+    // City breakdown
     const cityStats: Record<string, { donations: number; meals: number; delivered: number }> = {};
     for (const d of donations) {
       const city = d.city || 'Unknown';
@@ -88,23 +65,17 @@ Deno.serve(async (req: Request) => {
       cityStats[city].meals += d.meals || 0;
       if (d.status === 'delivered') cityStats[city].delivered += d.meals || 0;
     }
-
-    const cityBreakdown = Object.entries(cityStats)
-      .map(([city, stats]) => ({ city, ...stats }))
-      .sort((a, b) => b.meals - a.meals);
+    const cityBreakdown = Object.entries(cityStats).map(([city, s]) => ({ city, ...s })).sort((a, b) => b.meals - a.meals);
 
     // Category breakdown
-    const categoryStats: Record<string, { count: number; meals: number }> = {};
+    const catStats: Record<string, { count: number; meals: number }> = {};
     for (const d of donations) {
       const cat = d.category || 'Other';
-      if (!categoryStats[cat]) categoryStats[cat] = { count: 0, meals: 0 };
-      categoryStats[cat].count++;
-      categoryStats[cat].meals += d.meals || 0;
+      if (!catStats[cat]) catStats[cat] = { count: 0, meals: 0 };
+      catStats[cat].count++;
+      catStats[cat].meals += d.meals || 0;
     }
-
-    const categoryBreakdown = Object.entries(categoryStats)
-      .map(([category, stats]) => ({ category, ...stats }))
-      .sort((a, b) => b.meals - a.meals);
+    const categoryBreakdown = Object.entries(catStats).map(([category, s]) => ({ category, ...s })).sort((a, b) => b.meals - a.meals);
 
     // 7-day trend
     const now = Date.now();
@@ -123,12 +94,12 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Avg freshness of delivered donations
     const deliveredFreshness = donations.filter(d => d.status === 'delivered');
     const avgFreshness = deliveredFreshness.length > 0
       ? Math.round(deliveredFreshness.reduce((s, d) => s + (d.freshness_score || 0), 0) / deliveredFreshness.length)
       : 0;
 
+    const completedClaims = (claims || []).filter((c: any) => c.status === 'delivered' || c.status === 'completed');
     const report = {
       total_donations: totalDonations,
       total_meals_listed: totalMealsListed,
@@ -146,6 +117,7 @@ Deno.serve(async (req: Request) => {
       daily_trend: dailyTrend,
     };
 
+    // Save summary output
     await supabase.rpc('save_agent_output', {
       p_agent_type: 'impact_analytics',
       p_severity: 'info',
@@ -154,18 +126,48 @@ Deno.serve(async (req: Request) => {
       p_output: report,
     });
 
+    // If donation_id provided, save per-donation impact
+    if (donationId) {
+      const d = donations.find(dd => dd.id === donationId);
+      if (d) {
+        const donationMeals = d.meals || 0;
+        const donationWasteKg = Math.round(donationMeals * 0.4);
+        const donationCo2Kg = Math.round(donationWasteKg * 2.5);
+        const statusLabels: Record<string, string> = {
+          available: 'listed and awaiting NGO match',
+          claimed: 'claimed by an NGO — pickup being arranged',
+          picked: 'picked up — delivery in progress',
+          delivered: 'delivered — impact confirmed',
+          removed: 'removed from platform',
+        };
+        await supabase.rpc('save_agent_output', {
+          p_agent_type: 'impact_analytics',
+          p_severity: d.status === 'delivered' ? 'success' : 'info',
+          p_title: `${d.food_item} from ${d.restaurant_name} — ${donationMeals} meals, ${statusLabels[d.status] || d.status}`,
+          p_summary: `${donationMeals} meals · ${donationWasteKg} kg waste prevented · ${donationCo2Kg} kg CO2 saved · Status: ${d.status} · City: ${d.city} · Freshness: ${d.freshness_score}%`,
+          p_output: {
+            food_item: d.food_item,
+            restaurant_name: d.restaurant_name,
+            meals: donationMeals,
+            waste_prevented_kg: donationWasteKg,
+            co2_saved_kg: donationCo2Kg,
+            people_fed: donationMeals,
+            status: d.status,
+            city: d.city,
+            freshness_score: d.freshness_score,
+          },
+          p_donation_id: d.id,
+        });
+      }
+    }
+
     return new Response(JSON.stringify({
-      success: true,
-      agent: 'impact_analytics',
-      ...report,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+      success: true, agent: 'impact_analytics', ...report,
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : (typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err));
+    const msg = err instanceof Error ? err.message : String(err);
     return new Response(JSON.stringify({ error: msg }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

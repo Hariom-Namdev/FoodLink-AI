@@ -473,6 +473,37 @@ async function processTask(task: {
     top_ngo: ranked[0]?.name,
   });
 
+  // Save matching result to agent_outputs for the admin panel
+  const topMatch = ranked[0];
+  await supabase.rpc('save_agent_output', {
+    p_agent_type: 'donation_matching',
+    p_severity: topMatch ? 'success' : 'warning',
+    p_title: topMatch
+      ? `Matched ${donation.food_item} → ${topMatch.name} (${topMatch.matchScore}/100)`
+      : `No NGO match found for ${donation.food_item}`,
+    p_summary: topMatch
+      ? `Top match: ${topMatch.name} in ${topMatch.city}, ${topMatch.distance.toFixed(1)} km away. Score: ${topMatch.matchScore}/100. ${ranked.length} NGOs ranked. Factors — distance: ${topMatch.factors.distance}, capacity: ${topMatch.factors.capacity}, category: ${topMatch.factors.category_fit}, urgency: ${topMatch.factors.urgency}, freshness: ${topMatch.factors.freshness}.`
+      : `No verified NGOs available to match for ${donation.food_item} from ${donation.restaurant_name}.`,
+    p_output: {
+      top_match: topMatch ? {
+        ngo_id: topMatch.id,
+        ngo_name: topMatch.name,
+        ngo_city: topMatch.city,
+        match_score: topMatch.matchScore,
+        distance_km: topMatch.distance,
+        factors: topMatch.factors,
+      } : null,
+      total_candidates: ranked.length,
+      top_5: ranked.slice(0, 5).map((n: any) => ({
+        ngo_name: n.name,
+        ngo_city: n.city,
+        match_score: n.matchScore,
+        distance_km: n.distance,
+      })),
+    },
+    p_donation_id: donation.id,
+  });
+
   // Step 4: Pick the best match and notify
   const ngo = ranked[0];
   const newNotifiedIds = [...excludeIds, ngo.id];
@@ -654,6 +685,57 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+
+    // Direct refresh for the admin-selected donation
+    if (body.donation_id) {
+      const { data: donation, error: donationError } = await supabase
+        .from('donations')
+        .select('id, food_item, restaurant_name, city, status')
+        .eq('id', body.donation_id)
+        .maybeSingle();
+      if (donationError || !donation) throw new Error('Donation not found');
+
+      const { data: recommendations, error: recommendationError } = await supabase.rpc(
+        'get_donation_recommendations',
+        { p_donation_id: body.donation_id },
+      );
+      if (recommendationError) throw recommendationError;
+      const topMatch = recommendations?.[0] || null;
+
+      await supabase.rpc('save_agent_output', {
+        p_agent_type: 'donation_matching',
+        p_severity: topMatch ? 'success' : 'warning',
+        p_title: topMatch
+          ? `Matched ${donation.food_item} → ${topMatch.ngo_name} (${topMatch.match_score}/100)`
+          : `No NGO match found for ${donation.food_item}`,
+        p_summary: topMatch
+          ? `Top match: ${topMatch.ngo_name} in ${topMatch.ngo_city}. Score: ${topMatch.match_score}/100. Donation status: ${donation.status}.`
+          : `No saved NGO recommendation is available for ${donation.food_item} from ${donation.restaurant_name}.`,
+        p_output: {
+          donation_status: donation.status,
+          top_match: topMatch ? {
+            ngo_id: topMatch.ngo_id,
+            ngo_name: topMatch.ngo_name,
+            ngo_city: topMatch.ngo_city,
+            match_score: topMatch.match_score,
+            distance_km: topMatch.distance_km,
+            factors: topMatch.match_factors,
+          } : null,
+          recommendation_count: recommendations?.length || 0,
+        },
+        p_donation_id: donation.id,
+        p_ngo_id: topMatch?.ngo_id || null,
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        agent: 'donation_matching',
+        donation_id: donation.id,
+        matched: Boolean(topMatch),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Mode 1: NGO response webhook
     if (body.task_id && body.ngo_id && body.response) {

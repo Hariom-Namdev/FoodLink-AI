@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Bot, CheckCircle2, XCircle, Loader2, Clock,
   Package, MapPin, Send, Search, Target, TrendingUp,
   Brain, Sparkles, ChevronDown, ChevronUp, Cpu,
   ShieldCheck, AlertTriangle, Route, BarChart3, Leaf, Zap,
+  Activity, CircleDot, Radio,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Reveal } from './ui';
@@ -78,36 +79,41 @@ interface AgentSummary {
 }
 
 // ============ Agent definitions ============
-const AGENT_DEFS: Record<string, { name: string; icon: any; color: string; description: string }> = {
+const AGENT_DEFS: Record<string, { name: string; icon: any; color: string; glow: string; description: string }> = {
   donation_matching: {
-    name: 'Donation Matching Agent',
+    name: 'Donation Matching',
     icon: Target,
-    color: 'from-emerald-500 to-green-600',
-    description: 'Analyzes food type, quantity, location, urgency, and NGO capacity to recommend the best matching NGO for each donation.',
+    color: 'from-emerald-500 to-teal-600',
+    glow: 'shadow-[0_0_20px_rgba(16,185,129,0.15)]',
+    description: 'Matches donations to the best NGO using distance, capacity, category fit, urgency, and freshness.',
   },
   expiry_prediction: {
-    name: 'Expiry Prediction Agent',
+    name: 'Expiry Prediction',
     icon: Clock,
     color: 'from-amber-500 to-orange-600',
-    description: 'Predicts food shelf life and alerts when donations are nearing expiry to prioritize urgent pickups.',
+    glow: 'shadow-[0_0_20px_rgba(245,158,11,0.15)]',
+    description: 'Predicts shelf life and flags donations at risk of expiring soon.',
   },
   route_optimization: {
-    name: 'Route Optimization Agent',
+    name: 'Route Optimization',
     icon: Route,
-    color: 'from-sky-500 to-blue-600',
-    description: 'Optimizes volunteer pickup routes to minimize travel time and maximize delivery efficiency.',
+    color: 'from-sky-500 to-cyan-600',
+    glow: 'shadow-[0_0_20px_rgba(14,165,233,0.15)]',
+    description: 'Computes optimal pickup and delivery routes to minimize travel distance and time.',
   },
   fraud_detection: {
-    name: 'Fraud Detection Agent',
+    name: 'Fraud Detection',
     icon: ShieldCheck,
     color: 'from-rose-500 to-red-600',
-    description: 'Detects suspicious donations, duplicate listings, and quantity mismatches using pattern analysis.',
+    glow: 'shadow-[0_0_20px_rgba(244,63,94,0.15)]',
+    description: 'Scans for suspicious donations, duplicates, and quantity mismatches.',
   },
   impact_analytics: {
-    name: 'Impact Analytics Agent',
+    name: 'Impact Analytics',
     icon: BarChart3,
-    color: 'from-violet-500 to-purple-600',
-    description: 'Analyzes platform-wide impact metrics and generates insights for optimizing food redistribution.',
+    color: 'from-violet-500 to-fuchsia-600',
+    glow: 'shadow-[0_0_20px_rgba(139,92,246,0.15)]',
+    description: 'Meals rescued, waste prevented, CO2 saved, people fed, and city-wise trends.',
   },
 };
 
@@ -135,14 +141,15 @@ function FactorBar({ label, value, color }: { label: string; value: number; colo
 }
 
 // ============ Match score ring ============
-function ScoreRing({ score }: { score: number }) {
-  const radius = 18;
+function ScoreRing({ score, size = 'md' }: { score: number; size?: 'sm' | 'md' }) {
+  const radius = size === 'sm' ? 16 : 18;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (score / 100) * circumference;
   const color = score >= 80 ? '#22C55E' : score >= 60 ? '#84CC16' : score >= 40 ? '#F59E0B' : '#EF4444';
+  const dim = size === 'sm' ? 'h-10 w-10' : 'h-12 w-12';
   return (
-    <div className="relative flex h-12 w-12 items-center justify-center">
-      <svg className="h-12 w-12 -rotate-90" viewBox="0 0 44 44">
+    <div className={`relative flex ${dim} items-center justify-center`}>
+      <svg className={`${dim} -rotate-90`} viewBox="0 0 44 44">
         <circle cx="22" cy="22" r={radius} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="3" />
         <circle
           cx="22" cy="22" r={radius} fill="none" stroke={color} strokeWidth="3"
@@ -150,7 +157,7 @@ function ScoreRing({ score }: { score: number }) {
           className="transition-all duration-700"
         />
       </svg>
-      <span className="absolute font-display text-xs font-bold" style={{ color }}>{score}</span>
+      <span className={`absolute font-display ${size === 'sm' ? 'text-[10px]' : 'text-xs'} font-bold`} style={{ color }}>{score}</span>
     </div>
   );
 }
@@ -169,6 +176,50 @@ function SeverityBadge({ severity }: { severity: string }) {
     <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${cfg.bg} ${cfg.color}`}>
       <Icon className="h-2.5 w-2.5" />
       {severity.toUpperCase()}
+    </span>
+  );
+}
+
+// ============ Status indicator (shows real activity) ============
+function AgentStatusBadge({ summary }: { summary?: AgentSummary }) {
+  if (!summary) {
+    return (
+      <span className="flex items-center gap-1 rounded-full bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 ring-1 ring-slate-500/20">
+        <CircleDot className="h-2 w-2" />
+        Idle
+      </span>
+    );
+  }
+
+  const hasOutputs = summary.total_outputs > 0;
+  const hasPendingTasks = summary.pending_tasks > 0;
+  const hasCompletedTasks = summary.completed_tasks > 0;
+
+  if (hasPendingTasks) {
+    return (
+      <span className="flex items-center gap-1 rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold text-sky-400 ring-1 ring-sky-500/20">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-sky-500" />
+        </span>
+        Running
+      </span>
+    );
+  }
+
+  if (hasOutputs || hasCompletedTasks) {
+    return (
+      <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold text-emerald-400 ring-1 ring-emerald-500/20">
+        <CheckCircle2 className="h-2 w-2" />
+        Active
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-1 rounded-full bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 ring-1 ring-slate-500/20">
+      <CircleDot className="h-2 w-2" />
+      Idle
     </span>
   );
 }
@@ -366,7 +417,8 @@ function AgentOutputCard({ output, agentType }: { output: AgentOutput; agentType
         )}
       </AnimatePresence>
 
-      <div className="mt-2 text-[10px] text-slate-500">
+      <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+        <Activity className="h-2.5 w-2.5" />
         {new Date(output.created_at).toLocaleString()}
       </div>
     </motion.div>
@@ -503,7 +555,7 @@ function AgentRegistry({ summaries, activeAgent, onSelect }: {
           <button
             key={key}
             onClick={() => onSelect(key)}
-            className={`w-full rounded-xl p-4 text-left transition-all ${isActive ? 'glass-soft ring-1 ring-primary/30' : 'glass-soft opacity-60 hover:opacity-100'}`}
+            className={`w-full rounded-xl p-4 text-left transition-all ${isActive ? `glass-soft ring-1 ring-primary/30 ${def.glow}` : 'glass-soft opacity-60 hover:opacity-100'}`}
           >
             <div className="flex items-center gap-3">
               <div className={`flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br ${def.color}`}>
@@ -512,13 +564,7 @@ function AgentRegistry({ summaries, activeAgent, onSelect }: {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-xs font-semibold text-white">{def.name}</span>
-                  <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold text-emerald-400">
-                    <span className="relative flex h-1.5 w-1.5">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    </span>
-                    Active
-                  </span>
+                  <AgentStatusBadge summary={summary} />
                 </div>
                 <p className="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{def.description}</p>
               </div>
@@ -560,6 +606,7 @@ export function AIAgentsPanel() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [activeAgent, setActiveAgent] = useState('donation_matching');
+  const [selectedDonationId, setSelectedDonationId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -627,6 +674,27 @@ export function AIAgentsPanel() {
     };
   }, [loadData]);
 
+  // Load per-donation outputs when a donation is selected
+  useEffect(() => {
+    if (!selectedDonationId) return;
+    (async () => {
+      try {
+        const outputs: Record<string, AgentOutput[]> = {};
+        for (const agentType of AGENT_ORDER) {
+          if (agentType === 'donation_matching') continue;
+          const { data: outs } = await supabase.rpc('get_agent_outputs_by_donation', {
+            p_donation_id: selectedDonationId,
+            p_agent_type: agentType,
+          });
+          outputs[agentType] = (outs as AgentOutput[]) || [];
+        }
+        setAgentOutputs(outputs);
+      } catch (err) {
+        console.error('Per-donation output load error:', err);
+      }
+    })();
+  }, [selectedDonationId]);
+
   const filtered = search
     ? donationsWithRecs.filter((item) =>
         item.donation.food_item.toLowerCase().includes(search.toLowerCase()) ||
@@ -638,6 +706,10 @@ export function AIAgentsPanel() {
 
   const activeDef = AGENT_DEFS[activeAgent];
   const ActiveIcon = activeDef?.icon || Bot;
+
+  const totalActive = useMemo(() =>
+    summaries.reduce((s, a) => s + (a.pending_tasks > 0 || a.total_outputs > 0 || a.completed_tasks > 0 ? 1 : 0), 0),
+  [summaries]);
 
   return (
     <Reveal className="lg:col-span-3">
@@ -656,7 +728,7 @@ export function AIAgentsPanel() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
             </span>
-            {summaries.reduce((s, a) => s + a.pending_tasks, 0)} Active
+            {totalActive} Active
           </span>
         </div>
 
@@ -665,7 +737,7 @@ export function AIAgentsPanel() {
           {/* Left: Agent Registry */}
           <div className="lg:col-span-2 border-r border-white/5 p-5">
             <div className="mb-3 flex items-center gap-2">
-              <Bot className="h-3.5 w-3.5 text-primary" />
+              <Radio className="h-3.5 w-3.5 text-primary" />
               <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Agent Registry</h4>
             </div>
             <AgentRegistry summaries={summaries} activeAgent={activeAgent} onSelect={setActiveAgent} />
@@ -688,6 +760,20 @@ export function AIAgentsPanel() {
                     className="w-40 rounded-lg glass-soft py-1.5 pl-8 pr-3 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
+              )}
+              {activeAgent !== 'donation_matching' && activeAgent !== 'impact_analytics' && (
+                <select
+                  value={selectedDonationId || ''}
+                  onChange={(e) => setSelectedDonationId(e.target.value || null)}
+                  className="rounded-lg glass-soft px-3 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="" className="bg-ink-soft">All donations</option>
+                  {donationsWithRecs.map((item) => (
+                    <option key={item.donation.id} value={item.donation.id} className="bg-ink-soft">
+                      {item.donation.food_item} — {item.donation.restaurant_name}
+                    </option>
+                  ))}
+                </select>
               )}
             </div>
 

@@ -4,7 +4,7 @@ import { X, Utensils, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { foodCategories, cities } from '../data/content';
-import { triggerAnalysisAgents } from '../lib/triggerAgents';
+import { triggerAllAgents } from '../lib/triggerAgents';
 
 export default function DonateFoodModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useAuth();
@@ -43,7 +43,7 @@ export default function DonateFoodModal({ open, onClose }: { open: boolean; onCl
       }
 
       const freshness = calculateFreshness(form.category, parseInt(form.expiry_hours));
-      const { error } = await supabase.from('donations').insert({
+      const { data: inserted, error } = await supabase.from('donations').insert({
         restaurant_id: user.id,
         restaurant_name: user.organization || user.full_name,
         food_item: form.food_item,
@@ -57,28 +57,12 @@ export default function DonateFoodModal({ open, onClose }: { open: boolean; onCl
         freshness_score: freshness,
         image_url: form.image_url,
         status: 'available',
-      });
+      }).select('id').single();
 
       if (error) throw error;
 
-      // Trigger the Smart Donation AI Agent to process the new donation
-      try {
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-        const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-        await fetch(`${supabaseUrl}/functions/v1/smart-donation-agent`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${anonKey}`,
-          },
-          body: JSON.stringify({}),
-        });
-      } catch {
-        // Agent will pick up the task on its next poll cycle regardless
-      }
-
-      // Trigger the 4 analysis agents (expiry, route, fraud, impact)
-      triggerAnalysisAgents();
+      // Trigger all 5 AI agents for this specific donation
+      triggerAllAgents(inserted?.id);
 
       setSuccess(true);
       setTimeout(() => {
