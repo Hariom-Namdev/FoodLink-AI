@@ -690,7 +690,7 @@ Deno.serve(async (req: Request) => {
     if (body.donation_id) {
       const { data: donation, error: donationError } = await supabase
         .from('donations')
-        .select('id, food_item, restaurant_name, city, status')
+        .select('*')
         .eq('id', body.donation_id)
         .maybeSingle();
       if (donationError || !donation) throw new Error('Donation not found');
@@ -700,7 +700,32 @@ Deno.serve(async (req: Request) => {
         { p_donation_id: body.donation_id },
       );
       if (recommendationError) throw recommendationError;
-      const topMatch = recommendations?.[0] || null;
+
+      let topMatch = recommendations?.[0] || null;
+      if (!topMatch) {
+        const ranked = await rankNGOs(donation, []);
+        const topRanked = ranked[0] || null;
+        if (topRanked) {
+          topMatch = {
+            ngo_id: topRanked.id,
+            ngo_name: topRanked.name,
+            ngo_city: topRanked.city,
+            match_score: topRanked.matchScore,
+            distance_km: topRanked.distance,
+            match_factors: topRanked.factors,
+          };
+        }
+
+        const { data: tasks } = await supabase
+          .from('agent_tasks')
+          .select('id')
+          .eq('donation_id', body.donation_id)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (tasks?.[0] && ranked.length > 0) {
+          await generateRecommendations(tasks[0].id, donation, ranked);
+        }
+      }
 
       await supabase.rpc('save_agent_output', {
         p_agent_type: 'donation_matching',
