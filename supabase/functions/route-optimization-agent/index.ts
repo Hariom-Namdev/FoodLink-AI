@@ -200,7 +200,7 @@ Deno.serve(async (req: Request) => {
             food_item: claim.donation.food_item,
           },
           p_donation_id: claim.donation_id,
-          p_ngo_id: claim.ngo_id,
+          p_ngo_id: null,
         });
       }
 
