@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Loader2, Sparkles } from 'lucide-react';
+import { X, Loader2, Sparkles, AlertTriangle, Clock, MapPin, CheckCircle2 } from 'lucide-react';
 import { ngos, cities, foodCategories } from '../data/content';
+import { supabase } from '../lib/supabase';
 
 interface FeatureModalProps {
   open: boolean;
@@ -471,59 +472,149 @@ function DuplicateDemo() {
   );
 }
 
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+interface RouteStop {
+  label: string;
+  lat: number;
+  lng: number;
+}
+
 function RouteDemo() {
-  const [stops, setStops] = useState(3);
-  const [result, setResult] = useState<{ distance: number; time: number; order: string } | null>(null);
+  const [pickupLabel, setPickupLabel] = useState('');
+  const [pickupLat, setPickupLat] = useState('');
+  const [pickupLng, setPickupLng] = useState('');
+  const [deliveryLabel, setDeliveryLabel] = useState('');
+  const [deliveryLat, setDeliveryLat] = useState('');
+  const [deliveryLng, setDeliveryLng] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    distance: number;
+    time: number;
+    order: string;
+    pickup: RouteStop;
+    delivery: RouteStop;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
 
   const optimize = async () => {
+    setError(null);
+    const pLat = parseFloat(pickupLat);
+    const pLng = parseFloat(pickupLng);
+    const dLat = parseFloat(deliveryLat);
+    const dLng = parseFloat(deliveryLng);
+
+    if (isNaN(pLat) || isNaN(pLng) || isNaN(dLat) || isNaN(dLng)) {
+      setError('Please enter valid numeric coordinates for both locations.');
+      return;
+    }
+    if (pLat < -90 || pLat > 90 || dLat < -90 || dLat > 90) {
+      setError('Latitude must be between -90 and 90.');
+      return;
+    }
+    if (pLng < -180 || pLng > 180 || dLng < -180 || dLng > 180) {
+      setError('Longitude must be between -180 and 180.');
+      return;
+    }
+
     setLoading(true);
     setResult(null);
     try {
-      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chatbot`;
-      const res = await fetch(fnUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: `You are a route optimization AI for food delivery in India. Optimize a route with ${stops} pickup stops. Respond ONLY with JSON: {"total_distance_km": D, "estimated_minutes": M, "optimized_order": "Stop1→Stop2→Stop3"} where D and M are numbers. No other text.`,
-          }],
-        }),
+      const pickup: RouteStop = { label: pickupLabel || 'Pickup', lat: pLat, lng: pLng };
+      const delivery: RouteStop = { label: deliveryLabel || 'Delivery', lat: dLat, lng: dLng };
+      const distance = haversineKm(pLat, pLng, dLat, dLng);
+      const time = Math.max(1, Math.round((distance / 22) * 60));
+
+      setResult({
+        distance: Math.round(distance * 10) / 10,
+        time,
+        order: `${pickup.label} → ${delivery.label}`,
+        pickup,
+        delivery,
       });
-      if (!res.ok) throw new Error('Request failed');
-      const data = await res.json();
-      const match = data.reply?.match(/\{[^}]+\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        setResult({
-          distance: parsed.total_distance_km ?? stops * 2.5,
-          time: parsed.estimated_minutes ?? stops * 12,
-          order: parsed.optimized_order ?? Array.from({ length: stops }, (_, i) => `Stop${i + 1}`).join('→'),
-        });
-      } else {
-        setResult({ distance: stops * 2.5, time: stops * 12, order: Array.from({ length: stops }, (_, i) => `Stop${i + 1}`).join('→') });
-      }
     } catch {
-      setResult({ distance: stops * 2.5, time: stops * 12, order: Array.from({ length: stops }, (_, i) => `Stop${i + 1}`).join('→') });
+      setError('Failed to calculate route. Please check your inputs.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <ModalShell title="Route Optimization" subtitle="Minimizes volunteer travel time while maximizing meals delivered.">
-      <div className="space-y-3">
-        <div>
-          <label className="text-xs font-medium text-slate-400">Number of pickup stops: {stops}</label>
-          <input type="range" min="2" max="8" value={stops} onChange={(e) => setStops(Number(e.target.value))} className="mt-1 w-full accent-primary" />
+    <ModalShell title="Route Optimization" subtitle="Enter pickup and delivery locations to calculate distance, travel time, and optimized route.">
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <label className="text-xs font-semibold uppercase tracking-wide text-emerald-400">Pickup Location</label>
+          <input
+            value={pickupLabel}
+            onChange={(e) => setPickupLabel(e.target.value)}
+            placeholder="Location name (e.g. Taj Hotel, Mumbai)"
+            className="w-full rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+          />
+          <div className="flex gap-2">
+            <input
+              value={pickupLat}
+              onChange={(e) => setPickupLat(e.target.value)}
+              placeholder="Latitude (e.g. 19.076)"
+              type="number"
+              step="any"
+              className="flex-1 rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+            />
+            <input
+              value={pickupLng}
+              onChange={(e) => setPickupLng(e.target.value)}
+              placeholder="Longitude (e.g. 72.8777)"
+              type="number"
+              step="any"
+              className="flex-1 rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
         </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-semibold uppercase tracking-wide text-sky-400">Delivery Location</label>
+          <input
+            value={deliveryLabel}
+            onChange={(e) => setDeliveryLabel(e.target.value)}
+            placeholder="Location name (e.g. Akshaya Patra, Bengaluru)"
+            className="w-full rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+          />
+          <div className="flex gap-2">
+            <input
+              value={deliveryLat}
+              onChange={(e) => setDeliveryLat(e.target.value)}
+              placeholder="Latitude (e.g. 12.9716)"
+              type="number"
+              step="any"
+              className="flex-1 rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+            />
+            <input
+              value={deliveryLng}
+              onChange={(e) => setDeliveryLng(e.target.value)}
+              placeholder="Longitude (e.g. 77.5946)"
+              type="number"
+              step="any"
+              className="flex-1 rounded-xl glass-soft px-3 py-2 text-sm text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div className="rounded-xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/20">
+            {error}
+          </div>
+        )}
+
         <button onClick={optimize} disabled={loading} className="btn-primary w-full justify-center">
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          {loading ? 'Optimizing...' : 'Optimize Route'}
+          {loading ? 'Calculating...' : 'Optimize Route'}
         </button>
       </div>
       {result && (
@@ -533,46 +624,193 @@ function RouteDemo() {
             <span className="font-display text-lg font-bold text-emerald-400">{result.distance} km</span>
           </div>
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-sm text-slate-300">Estimated time</span>
+            <span className="text-sm text-slate-300">Estimated travel time</span>
             <span className="font-display text-lg font-bold text-emerald-400">{result.time} min</span>
           </div>
-          <div className="mt-2 text-xs text-slate-400">Optimized order: {result.order}</div>
+          <div className="mt-2 text-xs text-slate-400">Optimized route: {result.order}</div>
+          <div className="mt-3 flex items-center gap-2 text-[10px] text-slate-500">
+            <span className="rounded-lg bg-emerald-500/10 px-2 py-1 ring-1 ring-emerald-500/20">
+              {result.pickup.label} ({result.pickup.lat}, {result.pickup.lng})
+            </span>
+            <span>→</span>
+            <span className="rounded-lg bg-sky-500/10 px-2 py-1 ring-1 ring-sky-500/20">
+              {result.delivery.label} ({result.delivery.lat}, {result.delivery.lng})
+            </span>
+          </div>
         </ResultBox>
       )}
     </ModalShell>
   );
 }
 
+interface SmartAlert {
+  icon: 'warning' | 'urgent' | 'info' | 'success';
+  title: string;
+  detail: string;
+}
+
 function NotificationsDemo() {
-  const [result, setResult] = useState<string | null>(null);
+  const [alerts, setAlerts] = useState<SmartAlert[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const generate = async () => {
     setLoading(true);
-    setResult(null);
+    setAlerts(null);
+    setError(null);
     try {
-      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chatbot`;
-      const res = await fetch(fnUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: `You are a smart notification AI for FoodLink food donation platform in India. Generate 3 context-aware notification alerts that a volunteer or NGO might receive right now (e.g., expiring food nearby, pickup needed, impact milestone). Format as a numbered list, each 1 sentence. Keep it concise.`,
-          }],
-        }),
-      });
-      if (!res.ok) throw new Error('Request failed');
-      const data = await res.json();
-      setResult(data.reply || 'No notifications generated.');
-    } catch {
-      setResult('1. 120 meals of Veg Biryani expiring in 2h at Paradise Biryani — pickup needed urgently.\n2. You are 50 meals away from your 5,000 meal milestone!\n3. New donation available: 200 chapatis at Haldiram, 3km from your location.');
+      const generated: SmartAlert[] = [];
+
+      // 1. Expiring food — available donations with low expiry hours
+      const { data: expiring, error: expErr } = await supabase
+        .from('donations')
+        .select('id, food_item, restaurant_name, city, meals, expiry_hours, created_at')
+        .eq('status', 'available')
+        .order('expiry_hours', { ascending: true })
+        .limit(5);
+
+      if (expErr) throw expErr;
+      if (expiring) {
+        for (const d of expiring) {
+          if (d.expiry_hours !== null && d.expiry_hours <= 3) {
+            generated.push({
+              icon: 'urgent',
+              title: `${d.food_item} expiring in ${d.expiry_hours}h`,
+              detail: `${d.meals} meals at ${d.restaurant_name}, ${d.city} — pickup needed urgently.`,
+            });
+          } else if (d.expiry_hours !== null && d.expiry_hours <= 6) {
+            generated.push({
+              icon: 'warning',
+              title: `${d.food_item} expiring in ${d.expiry_hours}h`,
+              detail: `${d.meals} meals at ${d.restaurant_name}, ${d.city} — schedule pickup soon.`,
+            });
+          }
+        }
+      }
+
+      // 2. Pending claims — claimed donations awaiting pickup
+      const { data: pending, error: penErr } = await supabase
+        .from('claims')
+        .select(`
+          id, status, created_at,
+          donation:donations ( food_item, restaurant_name, city, meals )
+        `)
+        .eq('status', 'claimed')
+        .order('created_at', { ascending: true })
+        .limit(5);
+
+      if (penErr) throw penErr;
+      if (pending) {
+        const now = Date.now();
+        for (const c of pending as any[]) {
+          if (!c.donation) continue;
+          const hoursSinceClaim = Math.round((now - new Date(c.created_at).getTime()) / (1000 * 60 * 60));
+          if (hoursSinceClaim >= 2) {
+            generated.push({
+              icon: 'warning',
+              title: `Pickup pending for ${c.donation.food_item}`,
+              detail: `${c.donation.meals} meals at ${c.donation.restaurant_name}, ${c.donation.city} — claimed ${hoursSinceClaim}h ago, pickup overdue.`,
+            });
+          } else {
+            generated.push({
+              icon: 'info',
+              title: `Pickup ready: ${c.donation.food_item}`,
+              detail: `${c.donation.meals} meals at ${c.donation.restaurant_name}, ${c.donation.city} — claimed, awaiting pickup.`,
+            });
+          }
+        }
+      }
+
+      // 3. Available donations nearby — recent available donations
+      const { data: available, error: availErr } = await supabase
+        .from('donations')
+        .select('food_item, restaurant_name, city, meals, created_at')
+        .eq('status', 'available')
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (availErr) throw availErr;
+      if (available) {
+        for (const d of available) {
+          const hoursAgo = Math.round((Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60));
+          if (hoursAgo <= 1) {
+            generated.push({
+              icon: 'info',
+              title: `New donation available: ${d.food_item}`,
+              detail: `${d.meals} meals at ${d.restaurant_name}, ${d.city} — posted ${hoursAgo === 0 ? 'just now' : `${hoursAgo}h ago`}.`,
+            });
+          }
+        }
+      }
+
+      // 4. Impact milestones — total delivered meals
+      const { data: delivered, error: delErr } = await supabase
+        .from('donations')
+        .select('meals')
+        .eq('status', 'delivered');
+
+      if (delErr) throw delErr;
+      if (delivered && delivered.length > 0) {
+        const totalMeals = delivered.reduce((sum: number, d: any) => sum + (d.meals || 0), 0);
+        const milestones = [100, 500, 1000, 5000, 10000];
+        for (const m of milestones) {
+          if (totalMeals >= m && totalMeals < m + 50) {
+            generated.push({
+              icon: 'success',
+              title: `Impact milestone: ${m.toLocaleString('en-IN')} meals delivered!`,
+              detail: `The platform has delivered ${totalMeals.toLocaleString('en-IN')} meals total. Keep it up!`,
+            });
+            break;
+          }
+        }
+        if (totalMeals > 0 && generated.length < 3) {
+          generated.push({
+            icon: 'success',
+            title: `${totalMeals.toLocaleString('en-IN')} meals delivered so far`,
+            detail: `Across ${delivered.length} completed deliveries on the platform.`,
+          });
+        }
+      }
+
+      // 5. Picked donations awaiting delivery
+      const { data: picked, error: pickErr } = await supabase
+        .from('donations')
+        .select('food_item, restaurant_name, city, meals')
+        .eq('status', 'picked')
+        .limit(3);
+
+      if (pickErr) throw pickErr;
+      if (picked) {
+        for (const d of picked) {
+          generated.push({
+            icon: 'info',
+            title: `In transit: ${d.food_item}`,
+            detail: `${d.meals} meals from ${d.restaurant_name}, ${d.city} — picked up, delivery in progress.`,
+          });
+        }
+      }
+
+      // Deduplicate by title and limit to 6
+      const seen = new Set<string>();
+      const unique = generated.filter((a) => {
+        if (seen.has(a.title)) return false;
+        seen.add(a.title);
+        return true;
+      }).slice(0, 6);
+
+      setAlerts(unique.length > 0 ? unique : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate alerts.');
     } finally {
       setLoading(false);
     }
+  };
+
+  const iconConfig: Record<SmartAlert['icon'], { Icon: typeof AlertTriangle; color: string; bg: string }> = {
+    urgent: { Icon: AlertTriangle, color: 'text-rose-300', bg: 'bg-rose-500/10 ring-rose-500/20' },
+    warning: { Icon: Clock, color: 'text-amber-300', bg: 'bg-amber-500/10 ring-amber-500/20' },
+    info: { Icon: MapPin, color: 'text-sky-300', bg: 'bg-sky-500/10 ring-sky-500/20' },
+    success: { Icon: CheckCircle2, color: 'text-emerald-300', bg: 'bg-emerald-500/10 ring-emerald-500/20' },
   };
 
   return (
@@ -581,9 +819,42 @@ function NotificationsDemo() {
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
         {loading ? 'Generating...' : 'Generate Smart Alerts'}
       </button>
-      {result && (
+      {error && (
+        <div className="mt-3 rounded-xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/20">
+          {error}
+        </div>
+      )}
+      {alerts && (
         <ResultBox>
-          <div className="whitespace-pre-line text-sm text-slate-200">{result}</div>
+          {alerts.length === 0 ? (
+            <div className="py-4 text-center text-sm text-slate-500">
+              No active alerts right now. All donations are up to date.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {alerts.map((alert, i) => {
+                const cfg = iconConfig[alert.icon];
+                const Icon = cfg.Icon;
+                return (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.08 }}
+                    className="flex items-start gap-3"
+                  >
+                    <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 ${cfg.bg}`}>
+                      <Icon className={`h-4 w-4 ${cfg.color}`} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-semibold ${cfg.color}`}>{alert.title}</div>
+                      <div className="mt-0.5 text-xs text-slate-400">{alert.detail}</div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
         </ResultBox>
       )}
     </ModalShell>
