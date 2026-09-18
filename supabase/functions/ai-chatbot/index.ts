@@ -14,7 +14,8 @@ Background context (for reference only, when relevant): You are integrated into 
 
 Do not mention Google, Gemini, or any AI provider. Do not include ads.`;
 
-const GEMINI_MODEL = "gemini-3.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview";
 
 async function getApiKey(): Promise<string> {
   const envKey = Deno.env.get("GEMINI_API_KEY");
@@ -74,66 +75,73 @@ async function callGemini(apiKey: string, messages: { role: string; content: str
     parts: [{ text: m.content }],
   }));
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const payload = {
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 1024,
+      topP: 0.9,
+    },
+  };
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1024,
-          topP: 0.9,
-        },
-      }),
-      signal: controller.signal,
-    });
-  } catch (fetchErr) {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      const m = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      console.error(`Gemini fetch failed (${model}):`, m);
+      continue;
+    }
     clearTimeout(timeoutId);
-    const m = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-    throw new Error(`Gemini fetch failed: ${m}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Gemini API non-OK (${model}):`, response.status, errorText);
+      if (response.status === 503) continue;
+      throw new Error(`Gemini API ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    if (data?.error) {
+      const m = data.error.message || JSON.stringify(data.error);
+      console.error(`Gemini returned error field (${model}):`, m);
+      throw new Error(`Gemini error: ${m}`);
+    }
+
+    const candidates = data?.candidates;
+    if (!candidates || candidates.length === 0) {
+      console.error(`Gemini returned no candidates (${model}).`);
+      continue;
+    }
+
+    const parts = candidates[0]?.content?.parts;
+    if (!parts || parts.length === 0) {
+      console.error(`Gemini candidate has no parts (${model}).`);
+      continue;
+    }
+
+    const text = parts.map((p: { text?: string }) => p.text || "").join("");
+    const trimmed = text.trim();
+    if (!trimmed) {
+      console.error(`Gemini returned empty text (${model}).`);
+      continue;
+    }
+
+    return trimmed;
   }
-  clearTimeout(timeoutId);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("Gemini API non-OK response:", response.status, errorText);
-    throw new Error(`Gemini API ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  if (data?.error) {
-    const m = data.error.message || JSON.stringify(data.error);
-    console.error("Gemini returned error field:", m);
-    throw new Error(`Gemini error: ${m}`);
-  }
-
-  const candidates = data?.candidates;
-  if (!candidates || candidates.length === 0) {
-    console.error("Gemini returned no candidates. Full response:", JSON.stringify(data));
-    throw new Error("Gemini returned no candidates");
-  }
-
-  const parts = candidates[0]?.content?.parts;
-  if (!parts || parts.length === 0) {
-    console.error("Gemini candidate has no parts. Full response:", JSON.stringify(data));
-    throw new Error("Gemini returned empty content");
-  }
-
-  const text = parts.map((p: { text?: string }) => p.text || "").join("");
-  const trimmed = text.trim();
-  if (!trimmed) {
-    console.error("Gemini returned empty text. Full response:", JSON.stringify(data));
-    throw new Error("Gemini returned empty text");
-  }
-
-  return trimmed;
+  throw new Error("All Gemini models are currently unavailable. Please try again later.");
 }
