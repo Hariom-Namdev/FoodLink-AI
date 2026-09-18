@@ -4,7 +4,7 @@ import { X, Utensils, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { foodCategories, cities } from '../data/content';
-import { triggerAllAgents } from '../lib/triggerAgents';
+import { triggerCreationAgents } from '../lib/triggerAgents';
 
 export default function DonateFoodModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useAuth();
@@ -61,8 +61,8 @@ export default function DonateFoodModal({ open, onClose }: { open: boolean; onCl
 
       if (error) throw error;
 
-      // Trigger all 5 AI agents for this specific donation
-      triggerAllAgents(inserted?.id);
+      // Trigger creation-stage agents: matching, expiry, fraud
+      triggerCreationAgents(inserted?.id);
 
       setSuccess(true);
       setTimeout(() => {

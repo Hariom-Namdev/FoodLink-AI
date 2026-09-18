@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
     if (donationId) {
       query = query.eq('donation_id', donationId);
     } else {
-      query = query.in('status', ['claimed', 'picked', 'delivered']);
+      query = query.in('status', ['claimed', 'picked']);
     }
 
     const { data: claims, error } = await query;
