@@ -145,3 +145,4 @@ async function callGemini(apiKey: string, messages: { role: string; content: str
 
   throw new Error("All Gemini models are currently unavailable. Please try again later.");
 }
+
