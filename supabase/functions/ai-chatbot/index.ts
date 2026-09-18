@@ -14,7 +14,7 @@ Background context (for reference only, when relevant): You are integrated into 
 
 Do not mention Google, Gemini, or any AI provider. Do not include ads.`;
 
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = "gemini-3.5-flash";
 const GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview";
 
 async function getApiKey(): Promise<string> {
