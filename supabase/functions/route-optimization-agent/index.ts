@@ -2,6 +2,8 @@
 // Computes optimal pickup/delivery routes for claimed donations.
 // Accepts optional donation_id to compute route for a specific donation.
 // Writes per-donation and summary results to agent_outputs.
+// Uses actual lat/lng coordinates from donations and the NGO registry.
+// Deletes prior route outputs for the same donation before saving fresh ones.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -18,15 +20,8 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
-  Mumbai: { lat: 19.076, lng: 72.8777 },
-  Pune: { lat: 18.5204, lng: 73.8567 },
-  Delhi: { lat: 28.6139, lng: 77.209 },
-  Bengaluru: { lat: 12.9716, lng: 77.5946 },
-  Chennai: { lat: 13.0827, lng: 80.2707 },
-  Hyderabad: { lat: 17.385, lng: 78.4867 },
-  Kolkata: { lat: 22.5726, lng: 88.3639 },
-};
+// Average urban driving speed in Indian cities: ~22 km/h
+const AVG_SPEED_KMH = 22;
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -35,6 +30,16 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   const a = Math.sin(dLat / 2) ** 2 +
     Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function etaMinutes(distanceKm: number): number {
+  return Math.max(1, Math.round((distanceKm / AVG_SPEED_KMH) * 60));
+}
+
+function hasValidCoords(lat: any, lng: any): boolean {
+  const nLat = parseFloat(lat);
+  const nLng = parseFloat(lng);
+  return !isNaN(nLat) && !isNaN(nLng) && nLat !== 0 && nLng !== 0;
 }
 
 Deno.serve(async (req: Request) => {
@@ -49,9 +54,8 @@ Deno.serve(async (req: Request) => {
     let query = supabase
       .from('claims')
       .select(`
-        id, donation_id, ngo_id, status, created_at,
+        id, donation_id, ngo_id, ngo_registry_id, status, created_at,
         donation:donations ( id, food_item, restaurant_name, city, lat, lng, meals, expiry_hours, status ),
-        ngo:ngos ( id, name, city, lat, lng ),
         profile:profiles ( id, full_name, organization, city )
       `)
       .order('created_at', { ascending: false })
@@ -81,53 +85,167 @@ Deno.serve(async (req: Request) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Group by city
-    const cityGroups: Record<string, any[]> = {};
-    for (const c of claims as any[]) {
-      if (!c.donation) continue;
-      if (!c.ngo && c.profile) {
-        const profileCoords = CITY_COORDS[c.profile.city] || null;
-        c.ngo = {
-          id: c.profile.id,
-          name: c.profile.organization || c.profile.full_name || 'Claiming NGO',
-          city: c.profile.city || c.donation.city || 'Unknown',
-          lat: profileCoords?.lat ?? null,
-          lng: profileCoords?.lng ?? null,
-        };
-      }
-      if (!c.ngo) continue;
-      const city = c.donation.city || 'Unknown';
-      if (!cityGroups[city]) cityGroups[city] = [];
-      cityGroups[city].push(c);
+    // Collect donation IDs for dedup — delete prior route outputs before saving fresh ones
+    const donationIds = claims
+      .map((c: any) => c.donation_id)
+      .filter((id: string) => id);
+    if (donationIds.length > 0) {
+      await supabase
+        .from('agent_outputs')
+        .delete()
+        .eq('agent_type', 'route_optimization')
+        .in('donation_id', donationIds);
     }
 
-    if (Object.keys(cityGroups).length === 0) {
-      await supabase.rpc('save_agent_output', {
-        p_agent_type: 'route_optimization',
-        p_severity: 'warning',
-        p_title: `Route unavailable for donation ${donationId || 'selection'}`,
-        p_summary: 'A claim exists, but its pickup or delivery location is unavailable. The route will be recalculated when both locations are present.',
-        p_output: {
-          route_available: false,
-          reason: 'missing_pickup_or_delivery_location',
-          claim_count: claims.length,
-          donation_id: donationId,
-        },
-        p_donation_id: donationId || claims[0]?.donation_id || null,
-        p_ngo_id: claims[0]?.ngo_id || null,
+    // Fetch NGO registry coordinates for all claims that have ngo_registry_id
+    const registryIds = (claims as any[])
+      .map((c: any) => c.ngo_registry_id)
+      .filter((id: string) => id);
+    let ngoRegistryMap: Record<string, any> = {};
+    if (registryIds.length > 0) {
+      const { data: ngos, error: ngoError } = await supabase
+        .from('ngos')
+        .select('id, name, city, lat, lng')
+        .in('id', registryIds);
+      if (ngoError) throw ngoError;
+      if (ngos) {
+        for (const n of ngos) ngoRegistryMap[n.id] = n;
+      }
+    }
+
+    // Build route entries with real coordinates only
+    const routeEntries: any[] = [];
+    const skipped: any[] = [];
+
+    for (const c of claims as any[]) {
+      if (!c.donation) continue;
+
+      const pickupLat = parseFloat(c.donation.lat);
+      const pickupLng = parseFloat(c.donation.lng);
+
+      // Resolve delivery coordinates: prefer NGO registry, fall back to profile
+      let ngoName: string | null = null;
+      let ngoCity: string | null = null;
+      let deliveryLat: number | null = null;
+      let deliveryLng: number | null = null;
+
+      const ngoReg = c.ngo_registry_id ? ngoRegistryMap[c.ngo_registry_id] : null;
+      if (ngoReg && hasValidCoords(ngoReg.lat, ngoReg.lng)) {
+        ngoName = ngoReg.name;
+        ngoCity = ngoReg.city;
+        deliveryLat = parseFloat(ngoReg.lat);
+        deliveryLng = parseFloat(ngoReg.lng);
+      } else if (c.profile) {
+        ngoName = c.profile.organization || c.profile.full_name || 'Claiming NGO';
+        ngoCity = c.profile.city || c.donation.city || 'Unknown';
+        // Profiles don't have lat/lng — no fallback to hardcoded city centers
+      }
+
+      const pickupValid = hasValidCoords(pickupLat, pickupLng);
+      const deliveryValid = deliveryLat !== null && deliveryLng !== null;
+
+      if (!pickupValid || !deliveryValid) {
+        skipped.push({
+          donation_id: c.donation_id,
+          food_item: c.donation.food_item,
+          reason: !pickupValid ? 'missing_pickup_coordinates' : 'missing_delivery_coordinates',
+        });
+        continue;
+      }
+
+      const distance = haversineKm(pickupLat, pickupLng, deliveryLat, deliveryLng);
+      const eta = etaMinutes(distance);
+      const city = c.donation.city || 'Unknown';
+
+      routeEntries.push({
+        donation_id: c.donation_id,
+        food_item: c.donation.food_item,
+        restaurant_name: c.donation.restaurant_name,
+        pickup_city: city,
+        pickup_lat: pickupLat,
+        pickup_lng: pickupLng,
+        ngo_name: ngoName!,
+        ngo_city: ngoCity!,
+        delivery_lat: deliveryLat,
+        delivery_lng: deliveryLng,
+        meals: c.donation.meals,
+        distance_km: Math.round(distance * 10) / 10,
+        eta_min: eta,
       });
+    }
+
+    if (routeEntries.length === 0) {
+      const skipMsg = skipped.length > 0
+        ? `${skipped.length} claim(s) found but all lack coordinates required for routing.`
+        : 'No claims with valid coordinates found.';
+
+      // Single output per skipped donation — no separate per-skip + summary
+      for (const s of skipped) {
+        await supabase.rpc('save_agent_output', {
+          p_agent_type: 'route_optimization',
+          p_severity: 'warning',
+          p_title: `Route unavailable for ${s.food_item}`,
+          p_summary: `Coordinates are missing for this donation's ${s.reason === 'missing_pickup_coordinates' ? 'pickup location' : 'delivery location'}. The route will be recalculated once location data is available.`,
+          p_output: {
+            route_available: false,
+            reason: s.reason,
+            donation_id: s.donation_id,
+          },
+          p_donation_id: s.donation_id,
+        });
+      }
+
+      // For bulk mode (no donation_id), also save a city-level summary
+      if (!donationId) {
+        await supabase.rpc('save_agent_output', {
+          p_agent_type: 'route_optimization',
+          p_severity: 'warning',
+          p_title: `Route unavailable for current deliveries`,
+          p_summary: skipMsg,
+          p_output: {
+            route_available: false,
+            reason: 'missing_coordinates',
+            skipped: skipped,
+            claim_count: claims.length,
+          },
+        });
+      }
 
       return new Response(JSON.stringify({
         success: true, agent: 'route_optimization', routes: [],
-        total_deliveries: 0, message: 'Claim found but route locations are unavailable',
+        total_deliveries: 0, message: skipMsg,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // Mixed case: some valid, some skipped — save per-skip warnings
+    for (const s of skipped) {
+      await supabase.rpc('save_agent_output', {
+        p_agent_type: 'route_optimization',
+        p_severity: 'warning',
+        p_title: `Route unavailable for ${s.food_item}`,
+        p_summary: `Coordinates are missing for this donation's ${s.reason === 'missing_pickup_coordinates' ? 'pickup location' : 'delivery location'}. The route will be recalculated once location data is available.`,
+        p_output: {
+          route_available: false,
+          reason: s.reason,
+          donation_id: s.donation_id,
+        },
+        p_donation_id: s.donation_id,
+      });
+    }
+
+    // Group by city for multi-stop nearest-neighbor optimization
+    const cityGroups: Record<string, any[]> = {};
+    for (const entry of routeEntries) {
+      const city = entry.pickup_city;
+      if (!cityGroups[city]) cityGroups[city] = [];
+      cityGroups[city].push(entry);
     }
 
     const routes: any[] = [];
     let totalDistance = 0, totalOptimized = 0;
 
-    for (const [city, cityClaims] of Object.entries(cityGroups)) {
-      const unvisited = [...cityClaims];
+    for (const [city, entries] of Object.entries(cityGroups)) {
+      const unvisited = [...entries];
       const route: any[] = [];
       let currentLat: number | null = null, currentLng: number | null = null;
       let routeDistance = 0;
@@ -136,94 +254,88 @@ Deno.serve(async (req: Request) => {
         let nearestIdx = 0, nearestDist = Infinity;
         if (currentLat !== null && currentLng !== null) {
           for (let i = 0; i < unvisited.length; i++) {
-            const d = unvisited[i].donation;
-            if (d.lat && d.lng) {
-              const dist = haversineKm(currentLat, currentLng, parseFloat(d.lat), parseFloat(d.lng));
-              if (dist < nearestDist) { nearestDist = dist; nearestIdx = i; }
-            }
+            const dist = haversineKm(currentLat, currentLng, unvisited[i].pickup_lat, unvisited[i].pickup_lng);
+            if (dist < nearestDist) { nearestDist = dist; nearestIdx = i; }
           }
         }
 
-        const claim = unvisited.splice(nearestIdx, 1)[0];
-        const dLat = parseFloat(claim.donation.lat) || 0;
-        const dLng = parseFloat(claim.donation.lng) || 0;
+        const entry = unvisited.splice(nearestIdx, 1)[0];
 
         if (currentLat !== null) {
-          routeDistance += haversineKm(currentLat, currentLng, dLat, dLng);
+          const legDist = haversineKm(currentLat, currentLng, entry.pickup_lat, entry.pickup_lng);
+          routeDistance += legDist;
         }
-        currentLat = dLat; currentLng = dLng;
+        currentLat = entry.pickup_lat;
+        currentLng = entry.pickup_lng;
 
         route.push({
           type: 'pickup',
-          donation_id: claim.donation_id,
-          food_item: claim.donation.food_item,
-          restaurant_name: claim.donation.restaurant_name,
-          lat: dLat, lng: dLng,
-          meals: claim.donation.meals,
+          donation_id: entry.donation_id,
+          food_item: entry.food_item,
+          restaurant_name: entry.restaurant_name,
+          lat: entry.pickup_lat, lng: entry.pickup_lng,
+          meals: entry.meals,
         });
 
-        const nLat = parseFloat(claim.ngo.lat) || 0;
-        const nLng = parseFloat(claim.ngo.lng) || 0;
-        routeDistance += haversineKm(currentLat, currentLng, nLat, nLng);
-        currentLat = nLat; currentLng = nLng;
+        const deliveryDist = haversineKm(currentLat, currentLng, entry.delivery_lat, entry.delivery_lng);
+        routeDistance += deliveryDist;
+        currentLat = entry.delivery_lat;
+        currentLng = entry.delivery_lng;
 
         route.push({
           type: 'delivery',
-          ngo_id: claim.ngo_id,
-          ngo_name: claim.ngo.name,
-          lat: nLat, lng: nLng,
-          meals: claim.donation.meals,
+          ngo_name: entry.ngo_name,
+          lat: entry.delivery_lat, lng: entry.delivery_lng,
+          meals: entry.meals,
         });
 
-        // Save per-donation route output
-        const pickupToNgoDist = haversineKm(dLat, dLng, nLat, nLng);
-        const etaMin = Math.round(pickupToNgoDist * 3);
+        // Save per-donation route output (prior outputs already deleted above)
         await supabase.rpc('save_agent_output', {
           p_agent_type: 'route_optimization',
           p_severity: 'info',
-          p_title: `Route for ${claim.donation.food_item}: ${claim.donation.restaurant_name} → ${claim.ngo.name}, ${pickupToNgoDist.toFixed(1)} km, ETA ${etaMin} min`,
-          p_summary: `Pickup at ${claim.donation.restaurant_name} (${claim.donation.city}) → Deliver to ${claim.ngo.name} (${claim.ngo.city}). Distance: ${pickupToNgoDist.toFixed(1)} km. Estimated travel time: ${etaMin} min. Meals: ${claim.donation.meals}.`,
+          p_title: `Route for ${entry.food_item}: ${entry.restaurant_name} → ${entry.ngo_name}, ${entry.distance_km} km, ETA ${entry.eta_min} min`,
+          p_summary: `Pickup at ${entry.restaurant_name} (${entry.pickup_city}) → Deliver to ${entry.ngo_name} (${entry.ngo_city}). Distance: ${entry.distance_km} km. Estimated travel time: ${entry.eta_min} min. Meals: ${entry.meals}.`,
           p_output: {
             pickup: {
-              restaurant_name: claim.donation.restaurant_name,
-              city: claim.donation.city,
-              lat: dLat, lng: dLng,
+              restaurant_name: entry.restaurant_name,
+              city: entry.pickup_city,
+              lat: entry.pickup_lat, lng: entry.pickup_lng,
             },
             delivery: {
-              ngo_name: claim.ngo.name,
-              ngo_city: claim.ngo.city,
-              lat: nLat, lng: nLng,
+              ngo_name: entry.ngo_name,
+              ngo_city: entry.ngo_city,
+              lat: entry.delivery_lat, lng: entry.delivery_lng,
             },
-            distance_km: Math.round(pickupToNgoDist * 10) / 10,
-            estimated_time_min: etaMin,
-            meals: claim.donation.meals,
-            food_item: claim.donation.food_item,
+            distance_km: entry.distance_km,
+            estimated_time_min: entry.eta_min,
+            meals: entry.meals,
+            food_item: entry.food_item,
           },
-          p_donation_id: claim.donation_id,
+          p_donation_id: entry.donation_id,
           p_ngo_id: null,
         });
       }
 
       totalDistance += routeDistance;
-      totalOptimized += cityClaims.length;
+      totalOptimized += entries.length;
       routes.push({
         city, stops: route,
         total_distance_km: Math.round(routeDistance * 10) / 10,
-        estimated_time_min: Math.round(routeDistance * 3),
-        deliveries: cityClaims.length,
+        estimated_time_min: etaMinutes(routeDistance),
+        deliveries: entries.length,
       });
 
-      // Save per-city summary
+      // Save per-city summary (donation_id IS NULL so not deduped)
       await supabase.rpc('save_agent_output', {
         p_agent_type: 'route_optimization',
         p_severity: 'info',
-        p_title: `Optimized route for ${city}: ${cityClaims.length} deliveries, ${Math.round(routeDistance * 10) / 10} km`,
-        p_summary: `Nearest-neighbor route with ${route.length} stops. Estimated ${Math.round(routeDistance * 3)} min travel time.`,
+        p_title: `Optimized route for ${city}: ${entries.length} deliveries, ${Math.round(routeDistance * 10) / 10} km`,
+        p_summary: `Nearest-neighbor route with ${route.length} stops. Estimated ${etaMinutes(routeDistance)} min travel time.`,
         p_output: {
           city, stops: route,
           total_distance_km: Math.round(routeDistance * 10) / 10,
-          estimated_time_min: Math.round(routeDistance * 3),
-          deliveries: cityClaims.length,
+          estimated_time_min: etaMinutes(routeDistance),
+          deliveries: entries.length,
         },
       });
     }
@@ -232,6 +344,7 @@ Deno.serve(async (req: Request) => {
       success: true, agent: 'route_optimization',
       routes, total_deliveries: totalOptimized,
       total_distance_km: Math.round(totalDistance * 10) / 10,
+      skipped: skipped.length > 0 ? skipped : undefined,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -240,3 +353,4 @@ Deno.serve(async (req: Request) => {
     });
   }
 });
+
