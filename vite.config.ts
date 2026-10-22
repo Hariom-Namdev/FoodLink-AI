@@ -24,11 +24,11 @@ function parseEnvFile(path: string): Record<string, string> {
 
 export default defineConfig(({ mode }) => {
   // Load .env.production explicitly and inject into process.env so Vite's
-  // import.meta.env inlining uses these values even if the hosting platform
-  // (e.g. Vercel) has stale VITE_ env vars set in its dashboard.
+  // import.meta.env inlining uses these values, overriding any stale VITE_
+  // env vars the hosting platform (e.g. Vercel) may have in its dashboard.
   const envFile = parseEnvFile(resolve(process.cwd(), '.env.production'));
   for (const [key, value] of Object.entries(envFile)) {
-    if (key.startsWith('VITE_') && !process.env[key]) {
+    if (key.startsWith('VITE_')) {
       process.env[key] = value;
     }
   }
